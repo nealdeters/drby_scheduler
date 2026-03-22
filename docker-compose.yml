@@ -1,0 +1,14 @@
+services:
+  drby-worker:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - ABLY_API_KEY=${ABLY_API_KEY}
+      - NETLIFY_SITE_ID=${NETLIFY_SITE_ID}
+      - NETLIFY_AUTH_TOKEN=${NETLIFY_AUTH_TOKEN}
+    volumes:
+      - ./scripts:/app/scripts
+      - /mnt/neal_hd/drby_logs:/app/logs
+    command: ruby /app/scripts/run.rb

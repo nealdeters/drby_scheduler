@@ -211,7 +211,7 @@ class SeasonScheduler
     season_prefix = "s#{@current_season}"
 
     RACES_PER_SEASON.times do |i|
-      num_racers = rand(4..10)
+      num_racers = rand(4..8)
       shuffled = @roster.shuffle
       selected_ids = shuffled.take(num_racers).map(&:id)
 

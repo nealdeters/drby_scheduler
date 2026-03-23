@@ -38,7 +38,8 @@ class AblyService
     end
     
     progress_map = racers.each_with_object({}) do |racer, map|
-      map[racer.id] = [racer.total_distance.fdiv(progress_denominator), 1].min
+      raw_progress = racer.total_distance.fdiv(progress_denominator)
+      map[racer.id] = [[raw_progress, 0].max, 1].min
     end
 
     begin

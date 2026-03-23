@@ -1,8 +1,8 @@
 require_relative '../models'
 
 class RaceSimulator
-  UPDATE_INTERVAL_MS = 10
-  MAX_DURATION_MS = 180_000
+  UPDATE_INTERVAL_MS = 5
+  MAX_DURATION_MS = 300_000
 
   STRATEGY_DECAY = {
     'aggressive' => 0.025,
@@ -43,7 +43,7 @@ class RaceSimulator
       tick(elapsed)
       @tick_count += 1
 
-      if @tick_count % 10 == 0
+      if @tick_count % 2 == 0
         ably_service.publish_race_progress(@race_id, @racers, @tick_count, @total_distance, elapsed) if ably_service
         on_progress&.call(@racers, @tick_count)
       end

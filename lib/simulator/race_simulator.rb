@@ -2,7 +2,7 @@ require_relative '../models'
 
 class RaceSimulator
   UPDATE_INTERVAL_MS = 20
-  MAX_DURATION_MS = 22_000
+  MAX_DURATION_MS = 180_000
 
   STRATEGY_DECAY = {
     'aggressive' => 0.025,
@@ -43,28 +43,35 @@ class RaceSimulator
       @tick_count += 1
 
       if @tick_count % 20 == 0
-        ably_service.publish_race_progress(@race_id, @racers, @tick_count) if ably_service
+        ably_service.publish_race_progress(@race_id, @racers, @tick_count, @total_distance) if ably_service
         on_progress&.call(@racers, @tick_count)
       end
 
       sleep(UPDATE_INTERVAL_MS / 1000.0)
     end
 
-    unless @is_finished
-      puts "[Simulator] Race #{@race_id} paused at tick #{@tick_count} (max duration reached)"
-    end
-
     if @is_finished
-      results = @racers.sort_by { |r| r.finish_time || Float::INFINITY }
-      dnf_racers = @dnf_racers.map.with_index(results.length + 1) do |racer, idx|
-        Racer.from_hash(racer.to_h.merge('position' => idx))
-      end
-      all_results = results + dnf_racers
-
-      ably_service.publish_race_finished(@race_id, results, @dnf_racers, @tick_count) if ably_service
-      on_finish&.call(all_results)
+      puts "[Simulator] Race #{@race_id} finished naturally at tick #{@tick_count}"
+    else
+      puts "[Simulator] Race #{@race_id} reached max duration at tick #{@tick_count}, forcing finish"
     end
 
+    results = @racers.select(&:finished?).sort_by { |r| r.finish_time || Float::INFINITY }
+    non_finished = @racers.reject(&:finished?)
+    non_finished.each_with_index do |racer, idx|
+      racer.status = 'dnf'
+      racer.position = results.length + idx + 1
+    end
+    all_results = results + non_finished
+
+    dnf_with_positions = non_finished.map.with_index(results.length + 1) do |racer, idx|
+      Racer.from_hash(racer.to_h.merge('position' => idx))
+    end
+
+    ably_service.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count) if ably_service
+    on_finish&.call(all_results)
+
+    @is_finished = true
     @is_finished
   end
 
@@ -112,7 +119,7 @@ class RaceSimulator
 
   def tick
     elapsed = Time.now.to_i * 1000 - @start_time
-    all_finished = true
+    any_active_unfinished = false
 
     update_positions if @tick_count % 250 == 0
 
@@ -120,10 +127,10 @@ class RaceSimulator
       next unless racer.active?
 
       process_racer_tick(racer, elapsed)
-      all_finished = false unless racer.finished?
+      any_active_unfinished = true unless racer.finished?
     end
 
-    @is_finished = true if all_finished
+    @is_finished = !any_active_unfinished
   end
 
   def update_positions

@@ -1,18 +1,33 @@
 require_relative '../models'
 require_relative '../services'
 require_relative 'season_scheduler'
-require_relative 'race_simulator'
+require_relative '../simulator/race_simulator'
 
 class RaceOrchestrator
   CHECK_INTERVAL_SECONDS = 10
 
   def initialize(ably_api_key:, netlify_site_id:, netlify_auth_token:)
-    @storage = Services::NetlifyBlobsService.new(
+    @racers_storage = Services::NetlifyBlobsService.new(
       site_id: netlify_site_id,
-      auth_token: netlify_auth_token
+      auth_token: netlify_auth_token,
+      store_name: 'site:racers'
+    )
+    @tracks_storage = Services::NetlifyBlobsService.new(
+      site_id: netlify_site_id,
+      auth_token: netlify_auth_token,
+      store_name: 'site:tracks'
+    )
+    @races_storage = Services::NetlifyBlobsService.new(
+      site_id: netlify_site_id,
+      auth_token: netlify_auth_token,
+      store_name: 'site:races'
     )
     @ably = Services::AblyService.new(ably_api_key)
-    @scheduler = SeasonScheduler.new(storage_service: @storage)
+    @scheduler = SeasonScheduler.new(
+      storage_service: @races_storage,
+      racers_storage: @racers_storage,
+      tracks_storage: @tracks_storage
+    )
     @running = false
     @active_races = {}
   end

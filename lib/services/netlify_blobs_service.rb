@@ -19,13 +19,13 @@ class NetlifyBlobsService
     @auth_token = auth_token
     @store_name = store_name
     
-    if store_name
+    # if store_name
       @base_url = "https://app.netlify.com/access-control/bb-api/api/v1/blobs/#{@site_id}/#{@store_name}"
       @list_url = "https://app.netlify.com/access-control/bb-api/api/v1/blobs/#{@site_id}/#{@store_name}?directories=true"
-    else
-      @base_url = "https://api.netlify.com/api/v1/sites/#{@site_id}/blobs"
-      @list_url = @base_url
-    end
+    # else
+    #   @base_url = "https://api.netlify.com/api/v1/sites/#{@site_id}/blobs"
+    #   @list_url = @base_url
+    # end
   end
 
   def with_store(store_name)
@@ -88,6 +88,22 @@ class NetlifyBlobsService
   def get_racers
     data = get(RACERS_KEY)
     data.is_a?(Array) ? data : []
+  end
+
+  def get_all_racers
+    blobs = list_blobs
+    racers = blobs.keys.reject { |k| k == 'roster' }.map do |key|
+      get(key)
+    end.compact
+    racers.sort_by { |r| r['id'] || '' }
+  end
+
+  def get_all_tracks
+    blobs = list_blobs
+    tracks = blobs.keys.reject { |k| k == 'tracks' }.map do |key|
+      get(key)
+    end.compact
+    tracks.sort_by { |t| t['id'] || '' }
   end
 
   def save_racers(racers)

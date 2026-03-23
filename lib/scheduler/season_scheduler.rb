@@ -5,8 +5,10 @@ class SeasonScheduler
   RACES_PER_SEASON = 1008
   RACE_INTERVAL_MINUTES = 10
 
-  def initialize(storage_service:)
+  def initialize(storage_service:, racers_storage: nil, tracks_storage: nil)
     @storage = storage_service
+    @racers_storage = racers_storage || storage_service
+    @tracks_storage = tracks_storage || storage_service
     @roster = []
     @tracks = []
     @schedule = []
@@ -138,13 +140,13 @@ class SeasonScheduler
   private
 
   def load_roster
-    data = @storage.get_roster
+    data = @racers_storage.get_all_racers
     @roster = data.map { |r| Racer.from_hash(r) }
     puts "[Scheduler] Loaded #{@roster.length} racers"
   end
 
   def load_tracks
-    data = @storage.get_tracks
+    data = @tracks_storage.get_all_tracks
     if data && data.is_a?(Array) && !data.empty?
       @tracks = data.map { |t| Track.from_hash(t) }
     else
@@ -189,9 +191,18 @@ class SeasonScheduler
   def generate_new_schedule
     @schedule = []
 
+    if @roster.empty? || @tracks.empty?
+      puts "[Scheduler] Cannot generate schedule: #{@roster.empty? ? 'no racers' : 'no tracks'}"
+      return
+    end
+
     now = Time.now
     next_minute = ((now.min / 10) + 1) * 10
-    start_time = Time.new(now.year, now.month, now.day, now.hour, next_minute, 0, '+00:00')
+    if next_minute >= 60
+      start_time = Time.new(now.year, now.month, now.day, now.hour + 1, 0, 0, '+00:00')
+    else
+      start_time = Time.new(now.year, now.month, now.day, now.hour, next_minute, 0, '+00:00')
+    end
 
     if start_time <= now
       start_time += 60 * 10

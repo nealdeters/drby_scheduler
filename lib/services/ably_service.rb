@@ -8,13 +8,14 @@ class AblyService
     @rest_client = Ably::Rest.new(api_key)
   end
 
-  def publish_race_started(race_id, racers, track)
+  def publish_race_started(race_id, racers, track, elapsed = 0)
     channel = @rest_client.channels.get("#{RACE_CHANNEL_PREFIX}#{race_id}")
     begin
       channel.publish('race-update', {
         'type' => 'started',
         'raceId' => race_id,
         'timestamp' => Time.now.to_i * 1000,
+        'elapsed' => elapsed,
         'racers' => racers.map(&:to_h),
         'progressMap' => racers.each_with_object({}) { |r, h| h[r.id] = 0 },
         'tickCount' => 0
@@ -25,7 +26,7 @@ class AblyService
     end
   end
 
-  def publish_race_progress(race_id, racers, tick_count, total_distance = nil)
+  def publish_race_progress(race_id, racers, tick_count, total_distance = nil, elapsed = 0)
     channel = @rest_client.channels.get("#{RACE_CHANNEL_PREFIX}#{race_id}")
     
     progress_denominator = if total_distance && total_distance > 0
@@ -45,6 +46,7 @@ class AblyService
         'type' => 'progress',
         'raceId' => race_id,
         'timestamp' => Time.now.to_i * 1000,
+        'elapsed' => elapsed,
         'racers' => racers.map(&:to_h),
         'progressMap' => progress_map,
         'tickCount' => tick_count
@@ -54,13 +56,14 @@ class AblyService
     end
   end
 
-  def publish_race_finished(race_id, results, dnf_racers, tick_count)
+  def publish_race_finished(race_id, results, dnf_racers, tick_count, elapsed = 0)
     channel = @rest_client.channels.get("#{RACE_CHANNEL_PREFIX}#{race_id}")
     begin
       channel.publish('race-update', {
         'type' => 'finished',
         'raceId' => race_id,
         'timestamp' => Time.now.to_i * 1000,
+        'elapsed' => elapsed,
         'results' => results.map(&:to_h),
         'dnfRacers' => dnf_racers.map(&:to_h),
         'tickCount' => tick_count

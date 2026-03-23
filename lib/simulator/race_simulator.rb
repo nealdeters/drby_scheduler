@@ -1,7 +1,7 @@
 require_relative '../models'
 
 class RaceSimulator
-  UPDATE_INTERVAL_MS = 20
+  UPDATE_INTERVAL_MS = 10
   MAX_DURATION_MS = 180_000
 
   STRATEGY_DECAY = {
@@ -34,24 +34,27 @@ class RaceSimulator
   def run(ably_service:, on_progress: nil, on_finish: nil)
     puts "[Simulator] Starting race #{@race_id} with #{@racers.length} racers"
 
-    ably_service.publish_race_started(@race_id, @racers, @track) if ably_service
+    ably_service.publish_race_started(@race_id, @racers, @track, 0) if ably_service
 
-    race_start = Time.now.to_i
+    race_start = Time.now.to_i * 1000
 
-    while !@is_finished && (Time.now.to_i - race_start) * 1000 < MAX_DURATION_MS
-      tick
+    while !@is_finished && (Time.now.to_i * 1000 - race_start) < MAX_DURATION_MS
+      elapsed = Time.now.to_i * 1000 - race_start
+      tick(elapsed)
       @tick_count += 1
 
-      if @tick_count % 20 == 0
-        ably_service.publish_race_progress(@race_id, @racers, @tick_count, @total_distance) if ably_service
+      if @tick_count % 10 == 0
+        ably_service.publish_race_progress(@race_id, @racers, @tick_count, @total_distance, elapsed) if ably_service
         on_progress&.call(@racers, @tick_count)
       end
 
       sleep(UPDATE_INTERVAL_MS / 1000.0)
     end
 
+    elapsed = Time.now.to_i * 1000 - race_start
+
     if @is_finished
-      puts "[Simulator] Race #{@race_id} finished naturally at tick #{@tick_count}"
+      puts "[Simulator] Race #{@race_id} finished naturally at tick #{@tick_count}, #{elapsed}ms"
     else
       puts "[Simulator] Race #{@race_id} reached max duration at tick #{@tick_count}, forcing finish"
     end
@@ -68,7 +71,7 @@ class RaceSimulator
       Racer.from_hash(racer.to_h.merge('position' => idx))
     end
 
-    ably_service.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count) if ably_service
+    ably_service.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count, elapsed) if ably_service
     on_finish&.call(all_results)
 
     @is_finished = true
@@ -117,8 +120,7 @@ class RaceSimulator
     active
   end
 
-  def tick
-    elapsed = Time.now.to_i * 1000 - @start_time
+  def tick(elapsed)
     any_active_unfinished = false
 
     update_positions if @tick_count % 250 == 0

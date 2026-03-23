@@ -36,10 +36,10 @@ class RaceSimulator
 
     ably_service.publish_race_started(@race_id, @racers, @track, 0) if ably_service
 
-    race_start = Time.now.to_i * 1000
+    race_start = Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000
 
-    while !@is_finished && (Time.now.to_i * 1000 - race_start) < MAX_DURATION_MS
-      elapsed = Time.now.to_i * 1000 - race_start
+    while !@is_finished && (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000 - race_start) < MAX_DURATION_MS
+      elapsed = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000 - race_start).to_i
       tick(elapsed)
       @tick_count += 1
 
@@ -51,7 +51,7 @@ class RaceSimulator
       sleep(UPDATE_INTERVAL_MS / 1000.0)
     end
 
-    elapsed = Time.now.to_i * 1000 - race_start
+    elapsed = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000 - race_start).to_i
 
     if @is_finished
       puts "[Simulator] Race #{@race_id} finished naturally at tick #{@tick_count}, #{elapsed}ms"
@@ -72,7 +72,10 @@ class RaceSimulator
     end
 
     ably_service.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count, elapsed) if ably_service
+    
+    puts "[Simulator] Calling on_finish callback with #{all_results.length} results"
     on_finish&.call(all_results)
+    puts "[Simulator] on_finish callback completed"
 
     @is_finished = true
     @is_finished

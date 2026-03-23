@@ -57,22 +57,33 @@ class SeasonScheduler
 
   def complete_race(race_id, results, finish_times)
     race = @schedule.find { |r| r.id == race_id }
-    return false unless race
+    unless race
+      puts "[Scheduler] ERROR: Race #{race_id} not found in schedule during complete_race!"
+      return false
+    end
 
     race.completed = true
-    race.results = results
+    race.results = results.map(&:id)
     race.finish_times = finish_times
+    
+    puts "[Scheduler] Marked race #{race_id} as completed with #{results.length} results"
 
     update_standings_from_results(results)
     update_racer_health(results)
 
+    puts "[Scheduler] Saving schedule..."
     save_schedule
+    puts "[Scheduler] Schedule saved successfully"
     save_standings
     save_roster
 
     check_and_start_new_season if all_races_completed?
 
     true
+  rescue => e
+    puts "[Scheduler] ERROR saving race #{race_id}: #{e.message}"
+    puts e.backtrace.first(5).join("\n")
+    raise
   end
 
   def update_standings_from_results(results)
@@ -276,5 +287,20 @@ class SeasonScheduler
 
   def save_season_number
     @storage.save_season_number(@current_season)
+  end
+
+  def verify_race_saved(race_id)
+    saved_data = @storage.get_schedule
+    saved_race = saved_data.find { |r| r['id'] == race_id } if saved_data
+    if saved_race
+      puts "[Scheduler] Verified race #{race_id} in storage: completed=#{saved_race['completed']}, results_count=#{saved_race['results']&.length || 0}"
+      true
+    else
+      puts "[Scheduler] ERROR: Race #{race_id} not found in storage after save!"
+      false
+    end
+  rescue => e
+    puts "[Scheduler] ERROR verifying race #{race_id}: #{e.message}"
+    false
   end
 end

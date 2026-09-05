@@ -167,6 +167,21 @@ class SeasonScheduler
     @storage.save_schedule(@schedule.map(&:to_h))
   end
 
+  def verify_race_saved(race_id)
+    saved_data = @storage.get_schedule
+    saved_race = saved_data.find { |r| r['id'] == race_id } if saved_data
+    if saved_race
+      puts "[Scheduler] Verified race #{race_id} in storage: completed=#{saved_race['completed']}, results_count=#{saved_race['results']&.length || 0}"
+      true
+    else
+      puts "[Scheduler] ERROR: Race #{race_id} not found in storage after save!"
+      false
+    end
+  rescue => e
+    puts "[Scheduler] ERROR verifying race #{race_id}: #{e.message}"
+    false
+  end
+
   private
 
   def load_roster
@@ -303,18 +318,4 @@ class SeasonScheduler
     @storage.save_season_number(@current_season)
   end
 
-  def verify_race_saved(race_id)
-    saved_data = @storage.get_schedule
-    saved_race = saved_data.find { |r| r['id'] == race_id } if saved_data
-    if saved_race
-      puts "[Scheduler] Verified race #{race_id} in storage: completed=#{saved_race['completed']}, results_count=#{saved_race['results']&.length || 0}"
-      true
-    else
-      puts "[Scheduler] ERROR: Race #{race_id} not found in storage after save!"
-      false
-    end
-  rescue => e
-    puts "[Scheduler] ERROR verifying race #{race_id}: #{e.message}"
-    false
-  end
 end

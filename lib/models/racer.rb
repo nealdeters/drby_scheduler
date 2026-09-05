@@ -3,7 +3,7 @@ class Racer
               :endurance, :consistency, :stamina_recovery
 
   attr_accessor :health, :strategy, :lane, :progress, :laps, :total_distance,
-                :status, :current_speed, :finish_time, :position
+                :status, :current_speed, :finish_time, :position, :tick_count
 
   STRATEGIES = %w[aggressive conservative balanced].freeze
   SURFACES = %w[asphalt dirt grass].freeze
@@ -32,6 +32,7 @@ class Racer
     @current_speed = 0
     @finish_time = nil
     @position = nil
+    @tick_count = 0
   end
 
   def self.from_hash(hash)
@@ -70,7 +71,8 @@ class Racer
       'status' => status,
       'currentSpeed' => current_speed,
       'finishTime' => finish_time,
-      'position' => position
+      'position' => position,
+      'tickCount' => tick_count
     }
   end
 
@@ -84,6 +86,10 @@ class Racer
 
   def finished?
     status == 'finished'
+  end
+
+  def is_finished?
+    status == 'finished' || finish_time != nil
   end
 
   def can_race?

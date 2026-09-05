@@ -131,7 +131,7 @@ class RaceOrchestrator
       begin
         finished = simulator.run(
           ably_service: @ably,
-          on_finish: ->(results) { handle_race_finished(race_id, results) }
+          on_finish: ->(results, tick_count = nil) { handle_race_finished(race_id, results, tick_count) }
         )
 
         unless finished
@@ -146,7 +146,7 @@ class RaceOrchestrator
     end
   end
 
-  def handle_race_finished(race_id, results)
+  def handle_race_finished(race_id, results, tick_count = nil)
     puts "[Orchestrator] Race #{race_id} finished with #{results.length} results"
     
     if results.empty?
@@ -166,7 +166,12 @@ class RaceOrchestrator
     end
 
     puts "[Orchestrator] Saving race #{race_id} with results: #{results.map(&:id)}, finish_times: #{finish_times}"
-    
+
+    if !tick_count.nil?
+      race.tick_count = tick_count
+      @scheduler.save_race_tick_count(race_id, tick_count)
+    end
+
     @scheduler.complete_race(race_id, results, finish_times)
     
     puts "[Orchestrator] Verification - race #{race_id} in schedule: completed=#{race.completed}, results_count=#{race.results&.length || 0}"

@@ -31,6 +31,10 @@ class RaceSimulator
     @dnf_racers = []
   end
 
+  def reset_tick_count
+    @tick_count = 0
+  end
+
   def run(ably_service:, on_progress: nil, on_finish: nil)
     puts "[Simulator] Starting race #{@race_id} with #{@racers.length} racers"
 
@@ -74,7 +78,7 @@ class RaceSimulator
     ably_service.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count, elapsed) if ably_service
     
     puts "[Simulator] Calling on_finish callback with #{all_results.length} results"
-    on_finish&.call(all_results)
+    on_finish&.call(all_results, @tick_count)
     puts "[Simulator] on_finish callback completed"
 
     @is_finished = true

@@ -148,6 +148,21 @@ class SeasonScheduler
     true
   end
 
+  def save_race_tick_count(race_id, tick_count = nil)
+    race = @schedule.find { |r| r.id == race_id }
+    unless race
+      puts "[Scheduler] WARNING: Race #{race_id} not found when saving tick_count"
+      return false
+    end
+    race.tick_count = tick_count unless tick_count.nil?
+    save_schedule
+    puts "[Scheduler] Saved tick_count=#{race.tick_count.inspect} for race #{race_id}"
+    true
+  rescue => e
+    puts "[Scheduler] ERROR saving tick_count for #{race_id}: #{e.message}"
+    false
+  end
+
   private
 
   def load_roster

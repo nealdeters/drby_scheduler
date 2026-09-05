@@ -1,8 +1,8 @@
 class RaceEvent
   attr_reader :id, :start_time, :seed, :track, :racer_ids
-  attr_accessor :completed, :results, :finish_times
+  attr_accessor :completed, :results, :finish_times, :tick_count
 
-  def initialize(id:, start_time:, seed:, track:, racer_ids:, completed: false)
+  def initialize(id:, start_time:, seed:, track:, racer_ids:, completed: false, tick_count: nil)
     @id = id
     @start_time = start_time
     @seed = seed
@@ -11,6 +11,7 @@ class RaceEvent
     @completed = completed
     @results = nil
     @finish_times = nil
+    @tick_count = tick_count
   end
 
   def self.from_hash(hash)
@@ -21,7 +22,8 @@ class RaceEvent
       seed: hash['seed'],
       track: track,
       racer_ids: hash['racerIds'] || [],
-      completed: hash['completed'] || false
+      completed: hash['completed'] || false,
+      tick_count: hash['tickCount']
     ).tap do |event|
       event.results = hash['results']
       event.finish_times = hash['finishTimes']
@@ -37,7 +39,8 @@ class RaceEvent
       'racerIds' => racer_ids,
       'completed' => completed,
       'results' => results,
-      'finishTimes' => finish_times
+      'finishTimes' => finish_times,
+      'tickCount' => tick_count
     }.compact
   end
 end

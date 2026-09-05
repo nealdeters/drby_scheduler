@@ -18,7 +18,8 @@ class AblyService
         'elapsed' => elapsed,
         'racers' => racers.map(&:to_h),
         'progressMap' => racers.each_with_object({}) { |r, h| h[r.id] = 0 },
-        'tickCount' => 0
+        'tickCount' => 0,
+        'tickIncrement' => 1
       })
       puts "[Ably] Published started for race #{race_id}"
     rescue => e
@@ -28,7 +29,7 @@ class AblyService
 
   def publish_race_progress(race_id, racers, tick_count, total_distance = nil, elapsed = 0)
     channel = @rest_client.channels.get("#{RACE_CHANNEL_PREFIX}#{race_id}")
-    
+
     progress_denominator = if total_distance && total_distance > 0
       total_distance
     elsif racers.any?(&:total_distance)
@@ -36,7 +37,7 @@ class AblyService
     else
       1
     end
-    
+
     progress_map = racers.each_with_object({}) do |racer, map|
       raw_progress = racer.total_distance.fdiv(progress_denominator)
       map[racer.id] = [[raw_progress, 0].max, 1].min
@@ -50,7 +51,8 @@ class AblyService
         'elapsed' => elapsed,
         'racers' => racers.map(&:to_h),
         'progressMap' => progress_map,
-        'tickCount' => tick_count
+        'tickCount' => tick_count,
+        'tickIncrement' => 1
       })
     rescue => e
       puts "[Ably] Error publishing progress for race #{race_id}: #{e.message}"
@@ -67,7 +69,8 @@ class AblyService
         'elapsed' => elapsed,
         'results' => results.map(&:to_h),
         'dnfRacers' => dnf_racers.map(&:to_h),
-        'tickCount' => tick_count
+        'tickCount' => tick_count,
+        'tickIncrement' => 1
       })
       puts "[Ably] Published finished for race #{race_id}"
     rescue => e

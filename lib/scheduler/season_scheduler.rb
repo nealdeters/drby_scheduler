@@ -163,6 +163,10 @@ class SeasonScheduler
     false
   end
 
+  def save_schedule
+    @storage.save_schedule(@schedule.map(&:to_h))
+  end
+
   private
 
   def load_roster
@@ -283,11 +287,6 @@ class SeasonScheduler
     puts "[Scheduler] All races completed, starting new season..."
     start_new_season
   end
-
-  def save_schedule
-    @storage.save_schedule(@schedule.map(&:to_h))
-  end
-
   def save_standings
     @storage.save_standings(@standings)
   end

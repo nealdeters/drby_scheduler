@@ -139,7 +139,7 @@ class RaceSimulator
     end
 
     @dnf_racers = dnf
-    puts "[Simulator] Race #{@race_id}: #{dnf.length} DNF (health <= 60), #{active.length} racing"
+    puts "[Simulator] Race #{@race_id}: #{dnf.length} DNF (health <= #{Racer::MIN_RACE_HEALTH}), #{active.length} racing"
 
     active
   end

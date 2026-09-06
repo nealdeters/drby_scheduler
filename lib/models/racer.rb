@@ -92,7 +92,11 @@ class Racer
     status == 'finished' || finish_time != nil
   end
 
+  # Floor for starting a race. Depleted horses may still gamble in
+  # (fatigue / injury risk bite hard); scheduler rest-vs-gamble decides who enters.
+  MIN_RACE_HEALTH = 12
+
   def can_race?
-    health > 60
+    health.to_f > MIN_RACE_HEALTH
   end
 end

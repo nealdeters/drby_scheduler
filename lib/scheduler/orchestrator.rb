@@ -108,6 +108,15 @@ class RaceOrchestrator
     race_id = race_event.id
     track = race_event.track.is_a?(Models::Track) ? race_event.track : Models::Track.from_hash(race_event.track)
 
+    # Live rest-vs-gamble: rebuild field from current health / affinity / standings.
+    target = race_event.racer_ids&.length
+    @scheduler.assign_field_for_race!(race_event, target_size: target)
+    begin
+      @scheduler.save_schedule
+    rescue => e
+      puts "[Orchestrator] WARNING: could not persist reassigned field for #{race_id}: #{e.message}"
+    end
+
     racer_data = race_event.racer_ids.map do |racer_id|
       racer = @scheduler.roster.find { |r| r.id == racer_id }
       next nil unless racer
@@ -117,7 +126,7 @@ class RaceOrchestrator
 
     return unless racer_data.any?
 
-    puts "[Orchestrator] Starting race #{race_id} on #{track.name}"
+    puts "[Orchestrator] Starting race #{race_id} on #{track.name} (field=#{race_event.racer_ids.join(',')})"
 
     simulator = RaceSimulator.new(
       race_id: race_id,

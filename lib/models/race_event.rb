@@ -1,6 +1,6 @@
 class RaceEvent
-  attr_reader :id, :start_time, :seed, :track, :racer_ids
-  attr_accessor :completed, :results, :finish_times, :tick_count
+  attr_reader :id, :start_time, :seed, :track
+  attr_accessor :racer_ids, :completed, :results, :finish_times, :tick_count
 
   def initialize(id:, start_time:, seed:, track:, racer_ids:, completed: false, tick_count: nil)
     @id = id

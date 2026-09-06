@@ -5,6 +5,31 @@ class SeasonScheduler
   RACES_PER_SEASON = 1008
   RACE_INTERVAL_MINUTES = 10
 
+  # --- Sit-out recovery (per completed race interval) ---
+  # One sit must never fully refill: from ~0, full freshness takes several rests.
+  # Chunk ≈ 15–28 pts/sit → ~4–7 sits from wiped to fresh.
+  SIT_RECOVERY_BASE = 15
+  SIT_RECOVERY_STAMINA_SCALE = 9   # * (stamina_recovery / 100)
+  SIT_RECOVERY_JITTER = 4         # + rand(0..JITTER)
+  SIT_RECOVERY_CAP = 28           # hard cap so 0→100 in one sit is impossible
+
+  # Post-race residual fatigue on top of finishing in-race health.
+  # Keeps finishers meaningfully depleted into the next cycle.
+  RESIDUAL_FATIGUE = {
+    'aggressive' => 8..14,
+    'conservative' => 4..8,
+    'balanced' => 6..11
+  }.freeze
+  RESIDUAL_INJURY_BONUS = 22
+
+  # --- Rest vs gamble field selection ---
+  MIN_FIELD = 4
+  MAX_FIELD = 8
+  # Below this, entry desire collapses unless a strong gamble hook fires.
+  LOW_HEALTH_REST_THRESHOLD = 55
+  # Absolute refuse-to-enter floor (also see Racer::MIN_RACE_HEALTH).
+  HARD_REST_HEALTH = 12
+
   def initialize(storage_service:, racers_storage: nil, tracks_storage: nil)
     @storage = storage_service
     @racers_storage = racers_storage || storage_service
@@ -106,20 +131,100 @@ class SeasonScheduler
       if result_ids.include?(racer.id)
         raced = by_id[racer.id]
         # Carry actual in-race finishing health onto the roster so drain sticks.
-        finishing = raced.respond_to?(:health) ? raced.health.to_f : racer.health
-        residual = case racer.strategy
-                   when 'aggressive' then rand(4..7)
-                   when 'conservative' then rand(1..3)
-                   else rand(2..5)
-                   end
-        residual += 20 if raced&.status == 'injured'
-        racer.health = [0, finishing - residual].max
+        # Never snap back to full after racing — residual fatigue stays meaningful.
+        finishing = raced.respond_to?(:health) ? raced.health.to_f : racer.health.to_f
+        range = RESIDUAL_FATIGUE[racer.strategy] || RESIDUAL_FATIGUE['balanced']
+        residual = rand(range)
+        residual += RESIDUAL_INJURY_BONUS if raced&.status == 'injured'
+        racer.health = [0.0, finishing - residual].max.round(2)
       else
-        # Sitters recover slower than before so the field stays mixed.
-        recovery_rate = 2 + (racer.stamina_recovery / 100.0) * 8 + rand(0..2)
-        racer.health = [100, racer.health + recovery_rate].min
+        # Partial sit recovery only — one sit cannot refill 0→100.
+        racer.health = [100.0, racer.health.to_f + sit_recovery_amount(racer)].min.round(2)
       end
     end
+  end
+
+  # Public so orchestrator can rebuild the field at race time from live health.
+  def assign_field_for_race!(race, target_size: nil)
+    track = normalize_track(race.track)
+    max_size = [@roster.length, MAX_FIELD].min
+    min_size = [MIN_FIELD, max_size].min
+    raw = target_size || race.racer_ids&.length || (min_size > max_size ? max_size : rand(min_size..max_size))
+    size = raw.to_i.clamp(min_size, max_size)
+
+    selected = select_field(track, size)
+    race.racer_ids = selected.map(&:id)
+    race
+  end
+
+  def select_field(track, size)
+    return [] if @roster.empty?
+
+    scored = @roster.map do |racer|
+      desire = entry_desire(racer, track)
+      [racer, desire]
+    end
+
+    # Willing = positive desire; if too few, allow least-negative as desperate fills.
+    willing = scored.select { |_, d| d > 0.0 }
+    if willing.length < MIN_FIELD
+      willing = scored.reject { |_, d| d <= -1.0 }.sort_by { |_, d| -d }.first(size)
+    end
+
+    # Rank by desire with light noise so ties are not static; take top `size`.
+    ranked = willing.sort_by { |_, d| -(d + rand * 0.08) }
+    ranked.first(size).map(&:first)
+  end
+
+  # Strategic entry score: healthy horses enter normally; depleted ones usually
+  # rest but sometimes gamble on soft fields / preferred tracks / points need.
+  def entry_desire(racer, track)
+    health = racer.health.to_f
+    return -1.0 if health <= HARD_REST_HEALTH
+
+    desire = health / 100.0
+
+    # Track affinity hooks (prefer match, soft-penalize mismatch).
+    surface = track_surface(track)
+    pref = racer.track_preference.to_s
+    if surface && pref == surface
+      desire += 0.18
+    elsif surface && pref != 'grass' && pref != surface
+      desire -= 0.10
+    elsif pref == 'grass'
+      desire += 0.05
+    end
+
+    # Points standing: trailers are hungrier to race for points.
+    pts = (@standings[racer.id] || 0).to_f
+    max_pts = @standings.values.map(&:to_f).max || 0.0
+    if max_pts > 0
+      trailing = 1.0 - (pts / max_pts)
+      desire += trailing * 0.12
+    end
+
+    # Soft-field gamble estimate: if many roster mates are also depleted,
+    # a low-health horse may risk it (weaker expected competition).
+    depleted_share = @roster.count { |r| r.health.to_f < LOW_HEALTH_REST_THRESHOLD }.to_f / [@roster.length, 1].max
+    soft_field = depleted_share >= 0.45
+
+    if health < LOW_HEALTH_REST_THRESHOLD
+      # Default: prefer rest. Gamble only with a clear hook.
+      rest_bias = (LOW_HEALTH_REST_THRESHOLD - health) / LOW_HEALTH_REST_THRESHOLD
+      desire -= 0.55 * rest_bias
+
+      gamble = 0.0
+      gamble += 0.28 if soft_field
+      gamble += 0.22 if surface && pref == surface
+      gamble += 0.12 if max_pts > 0 && pts < max_pts * 0.5
+      # Small random spark so gambles are occasional, not spam.
+      gamble += rand * 0.10
+      desire += gamble
+
+      # Still often negative → sits this race out.
+    end
+
+    desire
   end
 
   def start_new_season
@@ -257,15 +362,18 @@ class SeasonScheduler
     season_prefix = "s#{@current_season}"
 
     RACES_PER_SEASON.times do |i|
-      num_racers = rand(4..8)
-      shuffled = @roster.shuffle
-      selected_ids = shuffled.take(num_racers).map(&:id)
+      max_size = [@roster.length, MAX_FIELD].min
+      min_size = [MIN_FIELD, max_size].min
+      num_racers = min_size >= max_size ? max_size : rand(min_size..max_size)
+      track = @tracks[i % @tracks.length]
+      # Placeholder field at schedule time; live rest-vs-gamble reassigns at race start.
+      selected_ids = select_field(track, num_racers).map(&:id)
 
       race = RaceEvent.new(
         id: "#{season_prefix}-race-#{i}-#{now.to_i}",
         start_time: (start_time + (i * RACE_INTERVAL_MINUTES * 60)).to_i * 1000,
         seed: rand(1_000_000),
-        track: @tracks[i % @tracks.length],
+        track: track,
         racer_ids: selected_ids
       )
 
@@ -308,7 +416,37 @@ class SeasonScheduler
   end
 
   def save_roster
-    @storage.save_roster(@roster.map(&:to_h))
+    payload = @roster.map(&:to_h)
+    # Legacy aggregate key on the races store (kept for compatibility).
+    @storage.save_roster(payload) if @storage.respond_to?(:save_roster)
+
+    # CRITICAL: load_roster reads individual blobs from site:racers via
+    # get_all_racers. Health must be written there or every restart (and any
+    # UI reading racer blobs) snaps sitters back to seeded 100 — the old
+    # "one sit → 0% to 100%" bug.
+    if @racers_storage.respond_to?(:set_blob)
+      @roster.each do |racer|
+        @racers_storage.set_blob(racer.id, racer.to_h)
+      end
+    end
+  end
+
+  def sit_recovery_amount(racer)
+    stamina = racer.stamina_recovery.to_f
+    raw = SIT_RECOVERY_BASE + (stamina / 100.0) * SIT_RECOVERY_STAMINA_SCALE + rand(0..SIT_RECOVERY_JITTER)
+    [raw, SIT_RECOVERY_CAP].min
+  end
+
+  def normalize_track(track)
+    return track if track.is_a?(Track)
+    return Track.from_hash(track) if track.is_a?(Hash)
+    track
+  end
+
+  def track_surface(track)
+    t = normalize_track(track)
+    return nil unless t
+    t.respond_to?(:surface) ? t.surface : t['surface']
   end
 
   def save_completed_seasons

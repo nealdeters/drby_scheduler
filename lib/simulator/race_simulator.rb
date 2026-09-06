@@ -4,16 +4,19 @@ class RaceSimulator
   UPDATE_INTERVAL_MS = 10
   MAX_DURATION_MS = 300_000
 
+  # Per-tick health drain (10ms ticks). Tuned so mid/long races leave
+  # finishers meaningfully below 100 and strategies stay distinct.
   STRATEGY_DECAY = {
-    'aggressive' => 0.025,
-    'balanced' => 0.012,
-    'conservative' => 0.006
+    'aggressive' => 0.055,
+    'balanced' => 0.032,
+    'conservative' => 0.018
   }.freeze
 
+  # Speed noise per tick — enough for pack reshuffles without chaos.
   STRATEGY_VARIANCE = {
-    'aggressive' => 0.15,
-    'balanced' => 0.08,
-    'conservative' => 0.04
+    'aggressive' => 0.22,
+    'balanced' => 0.14,
+    'conservative' => 0.08
   }.freeze
 
   attr_reader :race_id, :racers, :track, :total_distance, :tick_count, :is_finished
@@ -156,8 +159,14 @@ class RaceSimulator
     race_progress = racer.total_distance.to_f / @total_distance
 
     decay_rate = STRATEGY_DECAY[racer.strategy] || STRATEGY_DECAY['balanced']
-    endurance_mult = [0.2, (100 - racer.endurance) / 100.0].max
-    racer.health = [0, racer.health - decay_rate * endurance_mult].max
+    endurance_mult = [0.25, (100 - racer.endurance) / 100.0].max
+    # Front-runners pay a stamina tax so early leads can fade.
+    lead_pressure = lead_pressure_for(racer, race_progress)
+    # Pushing hard (high current speed vs base) also burns more.
+    pace_pressure = pace_pressure_for(racer)
+
+    health_drain = decay_rate * endurance_mult * (1.0 + lead_pressure + pace_pressure)
+    racer.health = [0, racer.health - health_drain].max
 
     base_speed = racer.base_speed * (UPDATE_INTERVAL_MS / 1000.0)
 
@@ -167,15 +176,23 @@ class RaceSimulator
       acceleration_boost = 0.3 * accel_factor * (1 - race_progress * 10)
     end
 
+    # Late-race closing kick for trailers with gas left — enables comebacks.
+    closing_boost = closing_boost_for(racer, race_progress)
+
     track_penalty = calculate_track_penalty(racer)
-    fatigue_penalty = [0, (100 - racer.health) / 200.0].max
+    # Nonlinear fatigue: soft early, harsh when gassed (was /200 linear).
+    tired = [(100 - racer.health) / 100.0, 0].max
+    fatigue_penalty = (tired ** 1.35) * 0.62
 
     base_variance = STRATEGY_VARIANCE[racer.strategy] || STRATEGY_VARIANCE['balanced']
     consistency_mult = [0.3, (100 - racer.consistency) / 100.0].max
     variance_cap = base_variance * consistency_mult
-    speed_adjustment = (rand - 0.5) * 2 * variance_cap
+    # Slightly more upside variance late so packs reshuffle.
+    late_mult = race_progress > 0.55 ? 1.25 : 1.0
+    speed_adjustment = (rand - 0.5) * 2 * variance_cap * late_mult
 
-    final_speed = base_speed * (1 + acceleration_boost + speed_adjustment - fatigue_penalty - track_penalty)
+    final_speed = base_speed * (1 + acceleration_boost + closing_boost + speed_adjustment - fatigue_penalty - track_penalty)
+    final_speed = [final_speed, base_speed * 0.35].max
     racer.current_speed = final_speed
 
     previous_laps = racer.laps
@@ -199,6 +216,45 @@ class RaceSimulator
     end
   end
 
+  def lead_pressure_for(racer, race_progress)
+    pos = racer.position.to_i
+    return 0 if pos <= 0 || race_progress < 0.08
+
+    case pos
+    when 1 then 0.55 + race_progress * 0.35
+    when 2 then 0.28 + race_progress * 0.2
+    when 3 then 0.12
+    else 0
+    end
+  end
+
+  def pace_pressure_for(racer)
+    base = racer.base_speed * (UPDATE_INTERVAL_MS / 1000.0)
+    return 0 if base <= 0 || racer.current_speed.to_f <= 0
+
+    ratio = racer.current_speed / base
+    return 0 if ratio < 1.05
+
+    ((ratio - 1.05) * 0.8).clamp(0.0, 0.45)
+  end
+
+  def closing_boost_for(racer, race_progress)
+    return 0 if race_progress < 0.58
+
+    pos = racer.position.to_i
+    field = [@racers.length, 1].max
+    return 0 if pos <= 0 || pos <= (field * 0.4).ceil
+
+    # Health + endurance gate the kick — gassed horses cannot surge.
+    gas = racer.health / 100.0
+    return 0 if gas < 0.35
+
+    endurance = racer.endurance / 100.0
+    depth = (pos - 1).to_f / field
+    late = ((race_progress - 0.58) / 0.42).clamp(0.0, 1.0)
+    0.04 + depth * 0.12 * gas * (0.45 + endurance * 0.55) * late
+  end
+
   def calculate_track_penalty(racer)
     case
     when racer.track_preference == 'asphalt' && @track.surface == 'dirt' then 0.25
@@ -209,10 +265,10 @@ class RaceSimulator
   end
 
   def check_injury(racer)
-    injury_chance = 0.01 * (1 + ((100 - racer.health) / 100.0)**2 * 4)
-    if rand < injury_chance && racer.health < 85
+    injury_chance = 0.012 * (1 + ((100 - racer.health) / 100.0)**2 * 5)
+    if rand < injury_chance && racer.health < 80
       racer.status = 'injured'
-      racer.health = [0, racer.health - 25].max
+      racer.health = [0, racer.health - 28].max
     end
   end
 end

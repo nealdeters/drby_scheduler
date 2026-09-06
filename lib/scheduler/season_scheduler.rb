@@ -100,22 +100,23 @@ class SeasonScheduler
 
   def update_racer_health(results)
     result_ids = results.map(&:id)
+    by_id = results.each_with_object({}) { |r, h| h[r.id] = r }
 
     @roster.each do |racer|
       if result_ids.include?(racer.id)
-        fatigue_rate = case racer.strategy
-                       when 'aggressive' then rand(8..12)
-                       when 'conservative' then rand(3..5)
-                       else rand(5..8)
-                       end
-
-        if results.find { |r| r.id == racer.id }&.status == 'injured'
-          fatigue_rate += 25
-        end
-
-        racer.health = [0, racer.health - fatigue_rate].max
+        raced = by_id[racer.id]
+        # Carry actual in-race finishing health onto the roster so drain sticks.
+        finishing = raced.respond_to?(:health) ? raced.health.to_f : racer.health
+        residual = case racer.strategy
+                   when 'aggressive' then rand(4..7)
+                   when 'conservative' then rand(1..3)
+                   else rand(2..5)
+                   end
+        residual += 20 if raced&.status == 'injured'
+        racer.health = [0, finishing - residual].max
       else
-        recovery_rate = 3 + (racer.stamina_recovery / 100.0) * 12 + rand(0..3)
+        # Sitters recover slower than before so the field stays mixed.
+        recovery_rate = 2 + (racer.stamina_recovery / 100.0) * 8 + rand(0..2)
         racer.health = [100, racer.health + recovery_rate].min
       end
     end

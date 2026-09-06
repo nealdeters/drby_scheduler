@@ -19,6 +19,20 @@ class RaceSimulator
     'conservative' => 0.08
   }.freeze
 
+  # Pack compression (2026-09-06): affinity + floor + rubber-band so
+  # mismatched / gassed horses stay in contention instead of laps behind.
+  # Effective surface range ~0.90–1.05 (was ~0.75–1.10 with 0.25/-0.10).
+  TRACK_MISMATCH_PENALTY = 0.10
+  TRACK_GRASS_BONUS = -0.05
+  # Min speed vs own base — raised from 0.35 so deep fatigue cannot crawl.
+  SPEED_FLOOR_RATIO = 0.55
+  # Fatigue scale at empty health (tired**1.35 * scale); was 0.62.
+  FATIGUE_SCALE = 0.48
+  # Soft catch-up when far behind race leader (distances in laps).
+  CATCHUP_START_LAPS = 0.30
+  CATCHUP_FULL_LAPS = 0.75
+  CATCHUP_MAX_BOOST = 0.32
+
   attr_reader :race_id, :racers, :track, :total_distance, :tick_count, :is_finished
 
   def initialize(race_id:, track:, racers:)
@@ -173,16 +187,19 @@ class RaceSimulator
     acceleration_boost = 0
     if race_progress < 0.1
       accel_factor = racer.acceleration / 100.0
-      acceleration_boost = 0.3 * accel_factor * (1 - race_progress * 10)
+      # Softened from 0.3 so early leads are less of a permanent string-out.
+      acceleration_boost = 0.22 * accel_factor * (1 - race_progress * 10)
     end
 
     # Late-race closing kick for trailers with gas left — enables comebacks.
     closing_boost = closing_boost_for(racer, race_progress)
+    # Soft rubber-band for deep trailers (pack compression).
+    catch_up_boost = catch_up_boost_for(racer)
 
     track_penalty = calculate_track_penalty(racer)
     # Nonlinear fatigue: soft early, harsh when gassed (was /200 linear).
     tired = [(100 - racer.health) / 100.0, 0].max
-    fatigue_penalty = (tired ** 1.35) * 0.62
+    fatigue_penalty = (tired ** 1.35) * FATIGUE_SCALE
 
     base_variance = STRATEGY_VARIANCE[racer.strategy] || STRATEGY_VARIANCE['balanced']
     consistency_mult = [0.3, (100 - racer.consistency) / 100.0].max
@@ -191,8 +208,8 @@ class RaceSimulator
     late_mult = race_progress > 0.55 ? 1.25 : 1.0
     speed_adjustment = (rand - 0.5) * 2 * variance_cap * late_mult
 
-    final_speed = base_speed * (1 + acceleration_boost + closing_boost + speed_adjustment - fatigue_penalty - track_penalty)
-    final_speed = [final_speed, base_speed * 0.35].max
+    final_speed = base_speed * (1 + acceleration_boost + closing_boost + catch_up_boost + speed_adjustment - fatigue_penalty - track_penalty)
+    final_speed = [final_speed, base_speed * SPEED_FLOOR_RATIO].max
     racer.current_speed = final_speed
 
     previous_laps = racer.laps
@@ -255,11 +272,26 @@ class RaceSimulator
     0.04 + depth * 0.12 * gas * (0.45 + endurance * 0.55) * late
   end
 
+  # Soft catch-up when far behind the current race leader.
+  # Keeps deep trailers from going a full lap+ back without erasing deficits.
+  def catch_up_boost_for(racer)
+    # Include finished racers so the true race leader anchors the pack.
+    leader_dist = @racers.map(&:total_distance).max
+    return 0 if leader_dist.nil? || @track.length.to_f <= 0
+
+    behind_laps = (leader_dist - racer.total_distance) / @track.length.to_f
+    return 0 if behind_laps < CATCHUP_START_LAPS
+
+    span = CATCHUP_FULL_LAPS - CATCHUP_START_LAPS
+    t = ((behind_laps - CATCHUP_START_LAPS) / span).clamp(0.0, 1.0)
+    CATCHUP_MAX_BOOST * t
+  end
+
   def calculate_track_penalty(racer)
     case
-    when racer.track_preference == 'asphalt' && @track.surface == 'dirt' then 0.25
-    when racer.track_preference == 'dirt' && @track.surface == 'asphalt' then 0.25
-    when racer.track_preference == 'grass' then -0.1
+    when racer.track_preference == 'asphalt' && @track.surface == 'dirt' then TRACK_MISMATCH_PENALTY
+    when racer.track_preference == 'dirt' && @track.surface == 'asphalt' then TRACK_MISMATCH_PENALTY
+    when racer.track_preference == 'grass' then TRACK_GRASS_BONUS
     else 0
     end
   end

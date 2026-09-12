@@ -24,13 +24,13 @@ class RaceSimulator
   TRACK_MISMATCH_PENALTY = 0.06
   TRACK_GRASS_BONUS = -0.03
   # Min speed vs own base — tired horses still run with the pack.
-  SPEED_FLOOR_RATIO = 0.72
+  SPEED_FLOOR_RATIO = 0.78
   # Fatigue scale at empty health (tired**1.35 * scale).
-  FATIGUE_SCALE = 0.34
-  # Catch-up starts as soon as a gap is visible (~5% of a lap).
-  CATCHUP_START_LAPS = 0.05
-  CATCHUP_FULL_LAPS = 0.18
-  CATCHUP_MAX_BOOST = 0.48
+  FATIGUE_SCALE = 0.30
+  # Catch-up starts as soon as a gap is visible (~3% of a lap).
+  CATCHUP_START_LAPS = 0.03
+  CATCHUP_FULL_LAPS = 0.10
+  CATCHUP_MAX_BOOST = 0.55
 
   attr_reader :race_id, :racers, :track, :total_distance, :tick_count, :is_finished
 

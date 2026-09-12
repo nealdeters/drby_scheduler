@@ -26,7 +26,8 @@ RSpec.describe 'Race pack margins' do
   end
 
   def gap_laps(sim)
-    dists = sim.racers.map(&:total_distance)
+    dists = sim.racers.reject { |r| %w[injured dnf].include?(r.status) }.map(&:total_distance)
+    return 0 if dists.empty?
     (dists.max - dists.min) / sim.track.length.to_f
   end
 
@@ -40,8 +41,9 @@ RSpec.describe 'Race pack margins' do
     ]
     srand(29)
     sim = RaceSimulator.new(race_id: 'pack-1', track: track, racers: racers)
+    allow(sim).to receive(:check_injury)
     max_gap = 0
-    4200.times do |i|
+    5200.times do |i|
       sim.instance_variable_set(:@tick_count, i)
       sim.send(:tick, i * RaceSimulator::UPDATE_INTERVAL_MS)
       g = gap_laps(sim)
@@ -49,9 +51,10 @@ RSpec.describe 'Race pack margins' do
       break if sim.is_finished
     end
     expect(sim.is_finished).to be true
-    expect(max_gap).to be < 0.25
-    finish_ms = sim.racers.map { |r| r.finish_time || 10_000 }
-    expect(finish_ms.max - finish_ms.min).to be < 8_000
+    expect(max_gap).to be < 0.16
+    finish_ms = sim.racers.map { |r| r.finish_time }.compact
+    expect(finish_ms.length).to eq(4)
+    expect(finish_ms.max - finish_ms.min).to be < 6_000
   end
 
   it 'does not let a mismatched trailer fall a lap behind mid-race' do
@@ -62,10 +65,11 @@ RSpec.describe 'Race pack margins' do
     ]
     srand(7)
     sim = RaceSimulator.new(race_id: 'pack-2', track: track, racers: racers)
-    1500.times do |i|
+    allow(sim).to receive(:check_injury)
+    2500.times do |i|
       sim.instance_variable_set(:@tick_count, i)
       sim.send(:tick, i * RaceSimulator::UPDATE_INTERVAL_MS)
-      expect(gap_laps(sim)).to be < 0.30
+      expect(gap_laps(sim)).to be < 0.16
       break if sim.is_finished
     end
   end

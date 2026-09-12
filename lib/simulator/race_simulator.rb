@@ -14,24 +14,23 @@ class RaceSimulator
 
   # Speed noise per tick — enough for pack reshuffles without chaos.
   STRATEGY_VARIANCE = {
-    'aggressive' => 0.22,
-    'balanced' => 0.14,
-    'conservative' => 0.08
+    'aggressive' => 0.14,
+    'balanced' => 0.09,
+    'conservative' => 0.05
   }.freeze
 
-  # Pack compression (2026-09-06): affinity + floor + rubber-band so
-  # mismatched / gassed horses stay in contention instead of laps behind.
-  # Effective surface range ~0.90–1.05 (was ~0.75–1.10 with 0.25/-0.10).
-  TRACK_MISMATCH_PENALTY = 0.10
-  TRACK_GRASS_BONUS = -0.05
-  # Min speed vs own base — raised from 0.35 so deep fatigue cannot crawl.
-  SPEED_FLOOR_RATIO = 0.55
-  # Fatigue scale at empty health (tired**1.35 * scale); was 0.62.
-  FATIGUE_SCALE = 0.48
-  # Soft catch-up when far behind race leader (distances in laps).
-  CATCHUP_START_LAPS = 0.30
-  CATCHUP_FULL_LAPS = 0.75
-  CATCHUP_MAX_BOOST = 0.32
+  # Pack compression: keep the field in a readable bunch (a few lengths,
+  # not strung around the oval) while still allowing a winner.
+  TRACK_MISMATCH_PENALTY = 0.06
+  TRACK_GRASS_BONUS = -0.03
+  # Min speed vs own base — tired horses still run with the pack.
+  SPEED_FLOOR_RATIO = 0.72
+  # Fatigue scale at empty health (tired**1.35 * scale).
+  FATIGUE_SCALE = 0.34
+  # Catch-up starts as soon as a gap is visible (~5% of a lap).
+  CATCHUP_START_LAPS = 0.05
+  CATCHUP_FULL_LAPS = 0.18
+  CATCHUP_MAX_BOOST = 0.48
 
   attr_reader :race_id, :racers, :track, :total_distance, :tick_count, :is_finished
 
@@ -187,8 +186,8 @@ class RaceSimulator
     acceleration_boost = 0
     if race_progress < 0.1
       accel_factor = racer.acceleration / 100.0
-      # Softened from 0.3 so early leads are less of a permanent string-out.
-      acceleration_boost = 0.22 * accel_factor * (1 - race_progress * 10)
+      # Soft break so early speed does not string the field out.
+      acceleration_boost = 0.12 * accel_factor * (1 - race_progress * 10)
     end
 
     # Late-race closing kick for trailers with gas left — enables comebacks.
@@ -272,8 +271,8 @@ class RaceSimulator
     0.04 + depth * 0.12 * gas * (0.45 + endurance * 0.55) * late
   end
 
-  # Soft catch-up when far behind the current race leader.
-  # Keeps deep trailers from going a full lap+ back without erasing deficits.
+  # Soft catch-up when behind the current race leader.
+  # Starts at a visible gap so the grandstand reads a pack, not a parade.
   def catch_up_boost_for(racer)
     # Include finished racers so the true race leader anchors the pack.
     leader_dist = @racers.map(&:total_distance).max

@@ -31,6 +31,21 @@ class RaceSimulator
   CATCHUP_START_LAPS = 0.02
   CATCHUP_FULL_LAPS = 0.07
   CATCHUP_MAX_BOOST = 0.58
+  # Front-runners may open a watchable lead before rubber-band.
+  BREAK_PROGRESS = 0.12
+  BREAK_CATCHUP_START_LAPS = 0.07
+  # Early / mid / late pace shape by declared strategy.
+  STRATEGY_PACE = {
+    'aggressive' => { early: 0.18, mid: 0.02, late: -0.05 }.freeze,
+    'balanced' => { early: 0.0, mid: 0.0, late: 0.02 }.freeze,
+    'conservative' => { early: -0.08, mid: -0.02, late: 0.14 }.freeze
+  }.freeze
+  # Extra late kick on top of position closing. Aggressive pays the break; no extra.
+  STRATEGY_CLOSING = {
+    'aggressive' => 0.0,
+    'balanced' => 0.85,
+    'conservative' => 1.45
+  }.freeze
 
   attr_reader :race_id, :racers, :track, :total_distance, :tick_count, :is_finished
 
@@ -190,6 +205,7 @@ class RaceSimulator
       acceleration_boost = 0.08 * accel_factor * (1 - race_progress * 10)
     end
 
+    strategy_pace = strategy_pace_for(racer, race_progress)
     # Late-race closing kick for trailers with gas left — enables comebacks.
     closing_boost = closing_boost_for(racer, race_progress)
     # Soft rubber-band for deep trailers (pack compression).
@@ -207,7 +223,7 @@ class RaceSimulator
     late_mult = race_progress > 0.55 ? 1.25 : 1.0
     speed_adjustment = (rand - 0.5) * 2 * variance_cap * late_mult
 
-    final_speed = base_speed * (1 + acceleration_boost + closing_boost + catch_up_boost + speed_adjustment - fatigue_penalty - track_penalty)
+    final_speed = base_speed * (1 + acceleration_boost + strategy_pace + closing_boost + catch_up_boost + speed_adjustment - fatigue_penalty - track_penalty)
     final_speed = [final_speed, base_speed * SPEED_FLOOR_RATIO].max
     racer.current_speed = final_speed
 
@@ -254,12 +270,43 @@ class RaceSimulator
     ((ratio - 1.05) * 0.8).clamp(0.0, 0.45)
   end
 
+  def strategy_pace_for(racer, race_progress)
+    profile = STRATEGY_PACE[racer.strategy] || STRATEGY_PACE['balanced']
+    early = profile[:early]
+    mid = profile[:mid]
+    late = profile[:late]
+    rp = race_progress.to_f
+    if rp < BREAK_PROGRESS
+      early
+    elsif rp < 0.20
+      t = ((rp - BREAK_PROGRESS) / (0.20 - BREAK_PROGRESS)).clamp(0.0, 1.0)
+      early + (mid - early) * t
+    elsif rp < 0.58
+      mid
+    elsif rp < 0.78
+      t = ((rp - 0.58) / 0.20).clamp(0.0, 1.0)
+      mid + (late - mid) * t
+    else
+      late
+    end
+  end
+
   def closing_boost_for(racer, race_progress)
     return 0 if race_progress < 0.58
 
+    strat_mult = STRATEGY_CLOSING[racer.strategy] || STRATEGY_CLOSING['balanced']
+    return 0 if strat_mult <= 0
+
     pos = racer.position.to_i
     field = [@racers.length, 1].max
-    return 0 if pos <= 0 || pos <= (field * 0.4).ceil
+    return 0 if pos <= 0
+
+    # Conservative may kick from mid-pack; others only if clearly back.
+    if racer.strategy == 'conservative'
+      return 0 if pos < 2
+    elsif pos <= (field * 0.4).ceil
+      return 0
+    end
 
     # Health + endurance gate the kick — gassed horses cannot surge.
     gas = racer.health / 100.0
@@ -268,7 +315,7 @@ class RaceSimulator
     endurance = racer.endurance / 100.0
     depth = (pos - 1).to_f / field
     late = ((race_progress - 0.58) / 0.42).clamp(0.0, 1.0)
-    0.04 + depth * 0.12 * gas * (0.45 + endurance * 0.55) * late
+    (0.04 + depth * 0.12 * gas * (0.45 + endurance * 0.55) * late) * strat_mult
   end
 
   # Soft catch-up when behind the current *live* leader.
@@ -278,13 +325,22 @@ class RaceSimulator
     return 0 if racer.finished?
     live = @racers.reject(&:finished?)
     leader_dist = live.map(&:total_distance).max
-    return 0 if leader_dist.nil? || @track.length.to_f <= 0
+    return 0 if leader_dist.nil? || @track.length.to_f <= 0 || @total_distance.to_f <= 0
+
+    leader_progress = leader_dist / @total_distance.to_f
+    start = CATCHUP_START_LAPS
+    full = CATCHUP_FULL_LAPS
+    # Do not erase the break. Still catch a mismatch that would string the oval.
+    if leader_progress < BREAK_PROGRESS
+      start = BREAK_CATCHUP_START_LAPS
+      full = start + (CATCHUP_FULL_LAPS - CATCHUP_START_LAPS)
+    end
 
     behind_laps = (leader_dist - racer.total_distance) / @track.length.to_f
-    return 0 if behind_laps < CATCHUP_START_LAPS
+    return 0 if behind_laps < start
 
-    span = CATCHUP_FULL_LAPS - CATCHUP_START_LAPS
-    t = ((behind_laps - CATCHUP_START_LAPS) / span).clamp(0.0, 1.0)
+    span = full - start
+    t = ((behind_laps - start) / span).clamp(0.0, 1.0)
     CATCHUP_MAX_BOOST * t
   end
 

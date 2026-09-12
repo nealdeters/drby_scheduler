@@ -61,9 +61,13 @@ RSpec.describe 'Strategy pace profiles' do
     con_laps = r['con'].total_distance / track.length.to_f
     expect(agg_laps).to be > bal_laps
     expect(con_laps).to be <= bal_laps
+    expect(r['con'].total_distance).to be < r['agg'].total_distance
     gap = agg_laps - bal_laps
     expect(gap).to be > 0.03
     expect(gap).to be < 0.10
+    # Conservative holds with the pack — not detached, not the early leader.
+    expect(r['con'].position).not_to eq(1)
+    expect((bal_laps - con_laps).abs).to be < 0.04
   end
 
   it 'keeps a mixed field in a pack at ~50% even with strategy lines' do
@@ -88,9 +92,17 @@ RSpec.describe 'Strategy pace profiles' do
       break if sim.racers.map(&:total_distance).min >= target || sim.is_finished
     end
     expect(max_gap).to be < 0.12
+
+    r = by_id(sim)
+    lead = sim.racers.map(&:total_distance).max
+    con_back = (lead - r['slow'].total_distance) / track.length.to_f
+    expect(con_back).to be < 0.12
+    # Conservative is in the pack, not ahead by a break-sized gap.
+    con_lead = (r['slow'].total_distance - sim.racers.map(&:total_distance).min) / track.length.to_f
+    expect(con_lead).to be < 0.08 if r['slow'].position == 1
   end
 
-  it 'lets a fresh conservative close vs a gassed aggressive in the last 20%' do
+  it 'lets a fresh conservative charge past balanced and gassed aggressive in the last 20%' do
     track = Models::Track.new(id: 't1', name: 'Oval', surface: 'asphalt', length: 1000, laps: 3)
     srand(13)
     sim = RaceSimulator.new(race_id: 'strat-late', track: track, racers: identical_field)
@@ -105,16 +117,23 @@ RSpec.describe 'Strategy pace profiles' do
 
     start = {
       'agg' => r0['agg'].total_distance,
+      'bal' => r0['bal'].total_distance,
       'con' => r0['con'].total_distance
     }
-    250.times do |j|
+    450.times do |j|
       i = sim.tick_count + 1 + j
       sim.instance_variable_set(:@tick_count, i)
       sim.send(:tick, i * RaceSimulator::UPDATE_INTERVAL_MS)
     end
     r1 = by_id(sim)
     agg_gain = r1['agg'].total_distance - start['agg']
+    bal_gain = r1['bal'].total_distance - start['bal']
     con_gain = r1['con'].total_distance - start['con']
     expect(con_gain).to be > agg_gain
+    expect(con_gain).to be > bal_gain
+    # Balanced late must not look like a closer charge vs conservative.
+    expect(bal_gain).to be < con_gain * 0.90
+    expect(r1['con'].current_speed).to be > r1['bal'].current_speed
+    expect(r1['con'].current_speed).to be > r1['agg'].current_speed
   end
 end

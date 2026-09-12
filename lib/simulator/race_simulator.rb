@@ -34,18 +34,26 @@ class RaceSimulator
   # Front-runners may open a watchable lead before rubber-band.
   BREAK_PROGRESS = 0.12
   BREAK_CATCHUP_START_LAPS = 0.07
+  # Late charge can show; still catch a parade-sized hole.
+  LATE_CATCHUP_START_LAPS = 0.09
+  LATE_CATCHUP_MAX_BOOST = 0.22
   # Early / mid / late pace shape by declared strategy.
+  # aggressive: jump the break, spend for the lead, fade.
+  # balanced: even early, opportunistic mid bursts, not a closer.
+  # conservative: hold with the pack, charge last ~15–20%.
   STRATEGY_PACE = {
     'aggressive' => { early: 0.18, mid: 0.02, late: -0.05 }.freeze,
-    'balanced' => { early: 0.0, mid: 0.0, late: 0.02 }.freeze,
-    'conservative' => { early: -0.08, mid: -0.02, late: 0.14 }.freeze
+    'balanced' => { early: 0.0, mid: 0.03, late: 0.0 }.freeze,
+    'conservative' => { early: -0.02, mid: 0.0, late: 0.20 }.freeze
   }.freeze
-  # Extra late kick on top of position closing. Aggressive pays the break; no extra.
+  # Extra late kick. Conservative only; balanced bursts are mid-race.
   STRATEGY_CLOSING = {
     'aggressive' => 0.0,
-    'balanced' => 0.85,
-    'conservative' => 1.45
+    'balanced' => 0.0,
+    'conservative' => 1.70
   }.freeze
+  CONSERVATIVE_KICK_START = 0.80
+  BALANCED_BURST_WINDOWS = [[0.28, 0.38], [0.44, 0.54]].freeze
 
   attr_reader :race_id, :racers, :track, :total_distance, :tick_count, :is_finished
 
@@ -206,6 +214,7 @@ class RaceSimulator
     end
 
     strategy_pace = strategy_pace_for(racer, race_progress)
+    mid_burst = mid_burst_for(racer, race_progress)
     # Late-race closing kick for trailers with gas left — enables comebacks.
     closing_boost = closing_boost_for(racer, race_progress)
     # Soft rubber-band for deep trailers (pack compression).
@@ -223,7 +232,7 @@ class RaceSimulator
     late_mult = race_progress > 0.55 ? 1.25 : 1.0
     speed_adjustment = (rand - 0.5) * 2 * variance_cap * late_mult
 
-    final_speed = base_speed * (1 + acceleration_boost + strategy_pace + closing_boost + catch_up_boost + speed_adjustment - fatigue_penalty - track_penalty)
+    final_speed = base_speed * (1 + acceleration_boost + strategy_pace + mid_burst + closing_boost + catch_up_boost + speed_adjustment - fatigue_penalty - track_penalty)
     final_speed = [final_speed, base_speed * SPEED_FLOOR_RATIO].max
     racer.current_speed = final_speed
 
@@ -276,36 +285,78 @@ class RaceSimulator
     mid = profile[:mid]
     late = profile[:late]
     rp = race_progress.to_f
-    if rp < BREAK_PROGRESS
-      early
-    elsif rp < 0.20
-      t = ((rp - BREAK_PROGRESS) / (0.20 - BREAK_PROGRESS)).clamp(0.0, 1.0)
-      early + (mid - early) * t
-    elsif rp < 0.58
-      mid
-    elsif rp < 0.78
-      t = ((rp - 0.58) / 0.20).clamp(0.0, 1.0)
-      mid + (late - mid) * t
+    strat = racer.strategy
+
+    case strat
+    when 'aggressive'
+      if rp < BREAK_PROGRESS
+        early
+      elsif rp < 0.22
+        t = ((rp - BREAK_PROGRESS) / (0.22 - BREAK_PROGRESS)).clamp(0.0, 1.0)
+        early + (mid - early) * t
+      elsif rp < 0.70
+        mid
+      else
+        t = ((rp - 0.70) / 0.30).clamp(0.0, 1.0)
+        mid + (late - mid) * t
+      end
+    when 'conservative'
+      # Hold with the pack until the last ~15–20%, then charge.
+      if rp < CONSERVATIVE_KICK_START
+        early
+      elsif rp < 0.85
+        t = ((rp - CONSERVATIVE_KICK_START) / (0.85 - CONSERVATIVE_KICK_START)).clamp(0.0, 1.0)
+        early + (late - early) * t
+      else
+        late
+      end
     else
-      late
+      # Balanced: even early, slight mid cruise (bursts are extra), no late charge.
+      if rp < BREAK_PROGRESS
+        early
+      elsif rp < 0.22
+        t = ((rp - BREAK_PROGRESS) / (0.22 - BREAK_PROGRESS)).clamp(0.0, 1.0)
+        early + (mid - early) * t
+      elsif rp < 0.58
+        mid
+      else
+        late
+      end
     end
   end
 
-  def closing_boost_for(racer, race_progress)
-    return 0 if race_progress < 0.58
+  # Opportunistic mid-race speed for balanced only — not a planned closer.
+  # Triangle pulses so it reads as a burst, not a second race shape.
+  def mid_burst_for(racer, race_progress)
+    return 0 unless racer.strategy == 'balanced'
+    return 0 if racer.health.to_f < 45
+    return 0 if racer.position.to_i == 1
 
-    strat_mult = STRATEGY_CLOSING[racer.strategy] || STRATEGY_CLOSING['balanced']
+    rp = race_progress.to_f
+    BALANCED_BURST_WINDOWS.each do |a, b|
+      next unless rp >= a && rp < b
+      span = b - a
+      t = (rp - a) / span
+      pulse = t < 0.5 ? t * 2.0 : (1.0 - t) * 2.0
+      return 0.11 * pulse
+    end
+    0
+  end
+
+  def closing_boost_for(racer, race_progress)
+    strat_mult = STRATEGY_CLOSING[racer.strategy] || 0.0
     return 0 if strat_mult <= 0
+
+    kick_start = racer.strategy == 'conservative' ? CONSERVATIVE_KICK_START : 0.70
+    return 0 if race_progress < kick_start
 
     pos = racer.position.to_i
     field = [@racers.length, 1].max
     return 0 if pos <= 0
 
-    # Conservative may kick from mid-pack; others only if clearly back.
-    if racer.strategy == 'conservative'
+    # Conservative charges if they still have gas; others only from off the lead.
+    if racer.strategy != 'conservative'
       return 0 if pos < 2
-    elsif pos <= (field * 0.4).ceil
-      return 0
     end
 
     # Health + endurance gate the kick — gassed horses cannot surge.
@@ -314,8 +365,8 @@ class RaceSimulator
 
     endurance = racer.endurance / 100.0
     depth = (pos - 1).to_f / field
-    late = ((race_progress - 0.58) / 0.42).clamp(0.0, 1.0)
-    (0.04 + depth * 0.12 * gas * (0.45 + endurance * 0.55) * late) * strat_mult
+    late = ((race_progress - kick_start) / (1.0 - kick_start)).clamp(0.0, 1.0)
+    (0.05 + depth * 0.14 * gas * (0.45 + endurance * 0.55) * late) * strat_mult
   end
 
   # Soft catch-up when behind the current *live* leader.
@@ -330,10 +381,16 @@ class RaceSimulator
     leader_progress = leader_dist / @total_distance.to_f
     start = CATCHUP_START_LAPS
     full = CATCHUP_FULL_LAPS
+    max_boost = CATCHUP_MAX_BOOST
     # Do not erase the break. Still catch a mismatch that would string the oval.
     if leader_progress < BREAK_PROGRESS
       start = BREAK_CATCHUP_START_LAPS
       full = start + (CATCHUP_FULL_LAPS - CATCHUP_START_LAPS)
+    elsif leader_progress >= CONSERVATIVE_KICK_START
+      # Do not rubber-band a closer's charge into an even line.
+      start = LATE_CATCHUP_START_LAPS
+      full = start + (CATCHUP_FULL_LAPS - CATCHUP_START_LAPS)
+      max_boost = LATE_CATCHUP_MAX_BOOST
     end
 
     behind_laps = (leader_dist - racer.total_distance) / @track.length.to_f
@@ -341,7 +398,7 @@ class RaceSimulator
 
     span = full - start
     t = ((behind_laps - start) / span).clamp(0.0, 1.0)
-    CATCHUP_MAX_BOOST * t
+    max_boost * t
   end
 
   def calculate_track_penalty(racer)

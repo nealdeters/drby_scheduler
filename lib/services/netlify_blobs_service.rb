@@ -67,9 +67,16 @@ class NetlifyBlobsService
   def get_season_number
     data = get(SEASON_NUMBER_KEY)
     return 1 unless data
+    return data if data.is_a?(Integer)
 
-    parsed = JSON.parse(data)
-    parsed.is_a?(Integer) ? parsed : (parsed['number'] || 1)
+    parsed = data.is_a?(String) ? JSON.parse(data) : data
+    return parsed if parsed.is_a?(Integer)
+    return parsed.to_i if parsed.is_a?(String) && parsed.match?(/^\d+$/)
+    if parsed.is_a?(Hash)
+      n = parsed['number'] || parsed[:number]
+      return n.to_i if n
+    end
+    1
   end
 
   def save_season_number(number)

@@ -79,13 +79,29 @@ class RaceOrchestrator
     while @running
       begin
         check_and_run_pending_races
-        sleep(CHECK_INTERVAL_SECONDS)
+        sleep(next_check_delay)
       rescue => e
         puts "[Orchestrator] Error in main loop: #{e.message}"
         puts e.backtrace.first(5).join("\n")
         sleep(CHECK_INTERVAL_SECONDS)
       end
     end
+  end
+
+  # Sleep until the next post instead of a fixed 10s poll — that 10s gap was
+  # the extra delay after the 3D countdown hit 00:00.
+  def next_check_delay
+    now = Time.now.to_i * 1000
+    upcoming = @scheduler.schedule.find { |race| !race.completed && !@active_races[race.id] }
+    return CHECK_INTERVAL_SECONDS unless upcoming
+
+    wait_ms = upcoming.start_time - now
+    return 0.2 if wait_ms <= 0
+    return 0.25 if wait_ms <= 5_000
+    return 1.0 if wait_ms <= 30_000
+
+    # Wake a couple of seconds before post so we do not oversleep the break.
+    [CHECK_INTERVAL_SECONDS, (wait_ms / 1000.0) - 2].min.clamp(1.0, CHECK_INTERVAL_SECONDS)
   end
 
   def check_and_run_pending_races
@@ -109,12 +125,15 @@ class RaceOrchestrator
     track = race_event.track.is_a?(Models::Track) ? race_event.track : Models::Track.from_hash(race_event.track)
 
     # Live rest-vs-gamble: rebuild field from current health / affinity / standings.
+    # Persist the field in the background — a Netlify round-trip must not delay the break.
     target = race_event.racer_ids&.length
     @scheduler.assign_field_for_race!(race_event, target_size: target)
-    begin
-      @scheduler.save_schedule
-    rescue => e
-      puts "[Orchestrator] WARNING: could not persist reassigned field for #{race_id}: #{e.message}"
+    Thread.new do
+      begin
+        @scheduler.save_schedule
+      rescue => e
+        puts "[Orchestrator] WARNING: could not persist reassigned field for #{race_id}: #{e.message}"
+      end
     end
 
     racer_data = race_event.racer_ids.map do |racer_id|

@@ -1,3 +1,4 @@
+require 'thread'
 require_relative '../models'
 require_relative '../services'
 
@@ -30,6 +31,10 @@ class SeasonScheduler
   # Absolute refuse-to-enter floor (also see Racer::MIN_RACE_HEALTH).
   HARD_REST_HEALTH = 12
 
+  # Season 3+: enter every surface, not just the horse's preferred track.
+  # Preference still affects who *wins* in the simulator; it must not gate who *runs*.
+  TRACK_BALANCE_FROM_SEASON = 3
+
   def initialize(storage_service:, racers_storage: nil, tracks_storage: nil)
     @storage = storage_service
     @racers_storage = racers_storage || storage_service
@@ -40,6 +45,7 @@ class SeasonScheduler
     @standings = {}
     @current_season = 1
     @completed_seasons = []
+    @save_mutex = Mutex.new
   end
 
   def load
@@ -157,7 +163,7 @@ class SeasonScheduler
     race
   end
 
-  def select_field(track, size)
+  def select_field(track, size, counts: nil, totals: nil)
     return [] if @roster.empty?
 
     scored = @roster.map do |racer|
@@ -171,8 +177,15 @@ class SeasonScheduler
       willing = scored.reject { |_, d| d <= -1.0 }.sort_by { |_, d| -d }.first(size)
     end
 
-    # Rank by desire with light noise so ties are not static; take top `size`.
-    ranked = willing.sort_by { |_, d| -(d + rand * 0.08) }
+    ranked = if track_balanced?
+      on_track, all_starts = counts && totals ? [counts, totals] : completed_start_counts(track)
+      willing.sort_by do |racer, desire|
+        [on_track[racer.id].to_i, all_starts[racer.id].to_i, -(desire + rand * 0.05)]
+      end
+    else
+      # Rank by desire with light noise so ties are not static; take top `size`.
+      willing.sort_by { |_, d| -(d + rand * 0.08) }
+    end
     ranked.first(size).map(&:first)
   end
 
@@ -184,15 +197,17 @@ class SeasonScheduler
 
     desire = health / 100.0
 
-    # Track affinity hooks (prefer match, soft-penalize mismatch).
     surface = track_surface(track)
     pref = racer.track_preference.to_s
-    if surface && pref == surface
-      desire += 0.18
-    elsif surface && pref != 'grass' && pref != surface
-      desire -= 0.10
-    elsif pref == 'grass'
-      desire += 0.05
+    unless track_balanced?
+      # Seasons 1–2: prefer match, soft-penalize mismatch.
+      if surface && pref == surface
+        desire += 0.18
+      elsif surface && pref != 'grass' && pref != surface
+        desire -= 0.10
+      elsif pref == 'grass'
+        desire += 0.05
+      end
     end
 
     # Points standing: trailers are hungrier to race for points.
@@ -215,7 +230,7 @@ class SeasonScheduler
 
       gamble = 0.0
       gamble += 0.28 if soft_field
-      gamble += 0.22 if surface && pref == surface
+      gamble += 0.22 if !track_balanced? && surface && pref == surface
       gamble += 0.12 if max_pts > 0 && pts < max_pts * 0.5
       # Small random spark so gambles are occasional, not spam.
       gamble += rand * 0.10
@@ -270,7 +285,11 @@ class SeasonScheduler
   end
 
   def save_schedule
-    @storage.save_schedule(@schedule.map(&:to_h))
+    # Snapshot + PUT under one lock so a background field-save cannot
+    # finish after complete_race and clobber results (last-write-wins).
+    @save_mutex.synchronize do
+      @storage.save_schedule(@schedule.map(&:to_h))
+    end
   end
 
   def verify_race_saved(race_id)
@@ -360,6 +379,8 @@ class SeasonScheduler
     end
 
     season_prefix = "s#{@current_season}"
+    on_track = Hash.new { |h, k| h[k] = Hash.new(0) }
+    all_starts = Hash.new(0)
 
     RACES_PER_SEASON.times do |i|
       max_size = [@roster.length, MAX_FIELD].min
@@ -367,7 +388,17 @@ class SeasonScheduler
       num_racers = min_size >= max_size ? max_size : rand(min_size..max_size)
       track = @tracks[i % @tracks.length]
       # Placeholder field at schedule time; live rest-vs-gamble reassigns at race start.
-      selected_ids = select_field(track, num_racers).map(&:id)
+      if track_balanced?
+        tid = track_id(track)
+        selected = select_field(track, num_racers, counts: on_track[tid], totals: all_starts)
+        selected.each do |racer|
+          on_track[tid][racer.id] += 1
+          all_starts[racer.id] += 1
+        end
+        selected_ids = selected.map(&:id)
+      else
+        selected_ids = select_field(track, num_racers).map(&:id)
+      end
 
       race = RaceEvent.new(
         id: "#{season_prefix}-race-#{i}-#{now.to_i}",
@@ -441,6 +472,32 @@ class SeasonScheduler
     return track if track.is_a?(Track)
     return Track.from_hash(track) if track.is_a?(Hash)
     track
+  end
+
+  def track_balanced?
+    @current_season.to_i >= TRACK_BALANCE_FROM_SEASON
+  end
+
+  def track_id(track)
+    t = normalize_track(track)
+    return nil unless t
+    t.respond_to?(:id) ? t.id : t['id']
+  end
+
+  def completed_start_counts(track)
+    tid = track_id(track)
+    on_track = Hash.new(0)
+    totals = Hash.new(0)
+    @schedule.each do |race|
+      next unless race.completed
+      ids = race.racer_ids && !race.racer_ids.empty? ? race.racer_ids : Array(race.results)
+      ids.each do |id|
+        next if id.nil?
+        totals[id] += 1
+        on_track[id] += 1 if track_id(race.track) == tid
+      end
+    end
+    [on_track, totals]
   end
 
   def track_surface(track)

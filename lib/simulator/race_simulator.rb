@@ -21,16 +21,16 @@ class RaceSimulator
 
   # Pack compression: keep the field in a readable bunch (a few lengths,
   # not strung around the oval) while still allowing a winner.
-  TRACK_MISMATCH_PENALTY = 0.06
+  TRACK_MISMATCH_PENALTY = 0.04
   TRACK_GRASS_BONUS = -0.03
   # Min speed vs own base — tired horses still run with the pack.
-  SPEED_FLOOR_RATIO = 0.78
+  SPEED_FLOOR_RATIO = 0.84
   # Fatigue scale at empty health (tired**1.35 * scale).
-  FATIGUE_SCALE = 0.30
-  # Catch-up starts as soon as a gap is visible (~3% of a lap).
-  CATCHUP_START_LAPS = 0.03
-  CATCHUP_FULL_LAPS = 0.10
-  CATCHUP_MAX_BOOST = 0.55
+  FATIGUE_SCALE = 0.22
+  # Catch-up starts as soon as a gap is visible (~2% of a lap).
+  CATCHUP_START_LAPS = 0.02
+  CATCHUP_FULL_LAPS = 0.07
+  CATCHUP_MAX_BOOST = 0.58
 
   attr_reader :race_id, :racers, :track, :total_distance, :tick_count, :is_finished
 
@@ -187,7 +187,7 @@ class RaceSimulator
     if race_progress < 0.1
       accel_factor = racer.acceleration / 100.0
       # Soft break so early speed does not string the field out.
-      acceleration_boost = 0.12 * accel_factor * (1 - race_progress * 10)
+      acceleration_boost = 0.08 * accel_factor * (1 - race_progress * 10)
     end
 
     # Late-race closing kick for trailers with gas left — enables comebacks.
@@ -271,11 +271,13 @@ class RaceSimulator
     0.04 + depth * 0.12 * gas * (0.45 + endurance * 0.55) * late
   end
 
-  # Soft catch-up when behind the current race leader.
-  # Starts at a visible gap so the grandstand reads a pack, not a parade.
+  # Soft catch-up when behind the current *live* leader.
+  # Finished horses are not a moving target — freeze-at-finish is enough;
+  # do not yo-yo trailers around the last lap after the race is decided.
   def catch_up_boost_for(racer)
-    # Include finished racers so the true race leader anchors the pack.
-    leader_dist = @racers.map(&:total_distance).max
+    return 0 if racer.finished?
+    live = @racers.reject(&:finished?)
+    leader_dist = live.map(&:total_distance).max
     return 0 if leader_dist.nil? || @track.length.to_f <= 0
 
     behind_laps = (leader_dist - racer.total_distance) / @track.length.to_f

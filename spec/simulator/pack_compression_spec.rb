@@ -31,7 +31,7 @@ RSpec.describe 'Race pack margins' do
     (dists.max - dists.min) / sim.track.length.to_f
   end
 
-  it 'keeps a mixed-speed asphalt field within a quarter lap' do
+  it 'keeps a mixed-speed asphalt field in a watchable bunch' do
     track = Models::Track.new(id: 't1', name: 'Oval', surface: 'asphalt', length: 1000, laps: 3)
     racers = [
       racer_hash(id: 'fast', name: 'Fast', base: 92, pref: 'asphalt', strategy: 'aggressive'),
@@ -51,10 +51,12 @@ RSpec.describe 'Race pack margins' do
       break if sim.is_finished
     end
     expect(sim.is_finished).to be true
-    expect(max_gap).to be < 0.16
+    expect(max_gap).to be < 0.12
     finish_ms = sim.racers.map { |r| r.finish_time }.compact
     expect(finish_ms.length).to eq(4)
-    expect(finish_ms.max - finish_ms.min).to be < 6_000
+    spread = finish_ms.max - finish_ms.min
+    expect(spread).to be < 4_000
+    expect(spread).to be > 200
   end
 
   it 'does not let a mismatched trailer fall a lap behind mid-race' do
@@ -69,7 +71,7 @@ RSpec.describe 'Race pack margins' do
     2500.times do |i|
       sim.instance_variable_set(:@tick_count, i)
       sim.send(:tick, i * RaceSimulator::UPDATE_INTERVAL_MS)
-      expect(gap_laps(sim)).to be < 0.16
+      expect(gap_laps(sim)).to be < 0.15
       break if sim.is_finished
     end
   end

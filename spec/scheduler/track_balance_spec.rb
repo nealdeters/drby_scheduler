@@ -5,10 +5,10 @@ RSpec.describe 'Season 3+ track rotation' do
   let(:roster_data) do
     prefs = %w[asphalt asphalt asphalt asphalt asphalt asphalt asphalt asphalt dirt dirt dirt dirt grass grass grass grass]
     names = [
-      'Lightning Bolt', 'Silver Streak', 'Thunder Bird', 'Road Runner',
-      'Midnight Runner', 'Red Rocket', 'Blue Thunder', 'Golden Boy',
+      'Lightning Bolt', 'Kenny', 'Thunder Bird', 'Road Runner',
+      'Frederico', "Carmella's Dream", 'Blue Thunder', 'Golden Boy',
       'Mud Slinger', 'Dirt Devil', 'Yellow Jacket', 'Iron Horse',
-      'Green Machine', 'Turbo Turtle', 'Purple Passion', 'Pink Panther'
+      'Green Machine', 'Turbo Turtle', 'Purple Passion', 'Spiral Ham'
     ]
     names.each_with_index.map do |name, i|
       {
@@ -62,7 +62,7 @@ RSpec.describe 'Season 3+ track rotation' do
     sch
   end
 
-  it 'keeps Pink Panther off most oval fields in season 2 (affinity)' do
+  it 'keeps Spiral Ham off most oval fields in season 2 (affinity)' do
     sch = build_scheduler(season: 2)
     oval = Models::Track.from_hash(tracks_data[0])
     pink = 0
@@ -73,7 +73,7 @@ RSpec.describe 'Season 3+ track rotation' do
     expect(pink).to be <= 8
   end
 
-  it 'puts every horse including Pink Panther on oval in season 3' do
+  it 'puts every horse including Spiral Ham on oval in season 3' do
     sch = build_scheduler(season: 3)
     oval = Models::Track.from_hash(tracks_data[0])
     seen = Hash.new(0)

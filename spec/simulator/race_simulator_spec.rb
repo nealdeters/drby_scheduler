@@ -24,8 +24,8 @@ RSpec.describe RaceSimulator do
 
     it 'marks unhealthy racers as DNF' do
       unhealthy_racers = [
-        racers[0].merge('health' => 50),
-        racers[1].merge('health' => 55)
+        racers[0].merge('health' => 5),
+        racers[1].merge('health' => 10)
       ]
       simulator = described_class.new(race_id: 'race-1', track: track, racers: unhealthy_racers)
       expect(simulator.racers.length).to eq(0)

@@ -21,16 +21,28 @@ class RaceSimulator
 
   # Pack compression: keep the field in a readable bunch (a few lengths,
   # not strung around the oval) while still allowing a winner.
-  TRACK_MISMATCH_PENALTY = 0.04
-  TRACK_GRASS_BONUS = -0.03
+  # Preferred surface is a small bonus; any other surface is a real penalty.
+  # Grass bonus applies only on grass — never on dirt/asphalt.
+  TRACK_PREF_BONUS = 0.035
+  TRACK_MISMATCH_PENALTY = 0.048
   # Min speed vs own base — tired horses still run with the pack.
   SPEED_FLOOR_RATIO = 0.84
-  # Fatigue scale at empty health (tired**1.35 * scale).
-  FATIGUE_SCALE = 0.22
-  # Catch-up starts as soon as a gap is visible (~2% of a lap).
-  CATCHUP_START_LAPS = 0.02
-  CATCHUP_FULL_LAPS = 0.07
-  CATCHUP_MAX_BOOST = 0.58
+  # Fatigue scale at empty health (tired**1.25 * scale). Soft early, still
+  # bites at mid health so a 40 is slower than a 100 from tick 0.
+  FATIGUE_SCALE = 0.18
+  HEALTH_PACE_SCALE = 0.08
+  # Catch-up holds the oval together but must not erase attr/track/health
+  # gaps. Do not raise CATCHUP_MAX_BOOST.
+  CATCHUP_START_LAPS = 0.032
+  CATCHUP_FULL_LAPS = 0.064
+  CATCHUP_MAX_BOOST = 0.50
+  ACCEL_WINDOW = 0.14
+  ACCEL_BOOST_SCALE = 0.20
+  ENDURANCE_HOLD_START = 0.55
+  ENDURANCE_HOLD_SCALE = 0.10
+  STAMINA_DRAIN_RELIEF = 0.16
+  STAMINA_TICK_RECOVER = 0.005
+  CONSISTENCY_WEAVE = 0.045
   # Front-runners may open a watchable lead before rubber-band.
   BREAK_PROGRESS = 0.12
   BREAK_CATCHUP_START_LAPS = 0.07
@@ -195,44 +207,49 @@ class RaceSimulator
     race_progress = racer.total_distance.to_f / @total_distance
 
     decay_rate = STRATEGY_DECAY[racer.strategy] || STRATEGY_DECAY['balanced']
-    endurance_mult = [0.25, (100 - racer.endurance) / 100.0].max
+    endurance_mult = endurance_drain_mult(racer)
     # Front-runners pay a stamina tax so early leads can fade.
     lead_pressure = lead_pressure_for(racer, race_progress)
     # Pushing hard (high current speed vs base) also burns more.
     pace_pressure = pace_pressure_for(racer)
 
+    recovery = (racer.stamina_recovery.to_f / 100.0).clamp(0.0, 1.0)
     health_drain = decay_rate * endurance_mult * (1.0 + lead_pressure + pace_pressure)
+    health_drain *= (1.0 - STAMINA_DRAIN_RELIEF * recovery)
     racer.health = [0, racer.health - health_drain].max
+    # Tiny in-race recover when not pushing — not a second health bar.
+    if pace_pressure <= 0 && lead_pressure <= 0 && race_progress > 0.04 && race_progress < 0.80
+      racer.health = [100.0, racer.health + STAMINA_TICK_RECOVER * recovery].min
+    end
 
     base_speed = racer.base_speed * (UPDATE_INTERVAL_MS / 1000.0)
 
-    acceleration_boost = 0
-    if race_progress < 0.1
-      accel_factor = racer.acceleration / 100.0
-      # Soft break so early speed does not string the field out.
-      acceleration_boost = 0.08 * accel_factor * (1 - race_progress * 10)
-    end
-
+    acceleration_boost = acceleration_boost_for(racer, race_progress)
     strategy_pace = strategy_pace_for(racer, race_progress)
     mid_burst = mid_burst_for(racer, race_progress)
     # Late-race closing kick for trailers with gas left — enables comebacks.
     closing_boost = closing_boost_for(racer, race_progress)
+    endurance_hold = endurance_hold_for(racer, race_progress)
     # Soft rubber-band for deep trailers (pack compression).
     catch_up_boost = catch_up_boost_for(racer)
 
     track_penalty = calculate_track_penalty(racer)
-    # Nonlinear fatigue: soft early, harsh when gassed (was /200 linear).
+    health_pace = health_pace_for(racer)
+    # Nonlinear fatigue: bites at mid health, harsh when gassed.
     tired = [(100 - racer.health) / 100.0, 0].max
-    fatigue_penalty = (tired ** 1.35) * FATIGUE_SCALE
+    fatigue_penalty = (tired ** 1.25) * FATIGUE_SCALE
 
     base_variance = STRATEGY_VARIANCE[racer.strategy] || STRATEGY_VARIANCE['balanced']
-    consistency_mult = [0.3, (100 - racer.consistency) / 100.0].max
-    variance_cap = base_variance * consistency_mult
+    # Low consistency wanders in the pack; high consistency holds a line.
+    consistency = (racer.consistency.to_f / 100.0).clamp(0.0, 1.0)
+    consistency_mult = [0.22, 1.0 - consistency].max
+    variance_cap = base_variance * consistency_mult * (0.55 + (1.0 - consistency) * 0.90)
     # Slightly more upside variance late so packs reshuffle.
     late_mult = race_progress > 0.55 ? 1.25 : 1.0
     speed_adjustment = (rand - 0.5) * 2 * variance_cap * late_mult
+    weave = Math.sin(@tick_count * 0.017 + racer.lane.to_f * 1.7) * CONSISTENCY_WEAVE * (1.0 - consistency)
 
-    final_speed = base_speed * (1 + acceleration_boost + strategy_pace + mid_burst + closing_boost + catch_up_boost + speed_adjustment - fatigue_penalty - track_penalty)
+    final_speed = base_speed * (1 + acceleration_boost + strategy_pace + mid_burst + closing_boost + endurance_hold + catch_up_boost + health_pace + speed_adjustment + weave - fatigue_penalty - track_penalty)
     final_speed = [final_speed, base_speed * SPEED_FLOOR_RATIO].max
     racer.current_speed = final_speed
 
@@ -402,12 +419,41 @@ class RaceSimulator
   end
 
   def calculate_track_penalty(racer)
-    case
-    when racer.track_preference == 'asphalt' && @track.surface == 'dirt' then TRACK_MISMATCH_PENALTY
-    when racer.track_preference == 'dirt' && @track.surface == 'asphalt' then TRACK_MISMATCH_PENALTY
-    when racer.track_preference == 'grass' then TRACK_GRASS_BONUS
-    else 0
+    pref = racer.track_preference.to_s
+    surface = @track.surface.to_s
+    return 0 if pref.empty? || surface.empty?
+
+    if pref == surface
+      -TRACK_PREF_BONUS
+    else
+      TRACK_MISMATCH_PENALTY
     end
+  end
+
+  def endurance_drain_mult(racer)
+    # High endurance drains slowly; low endurance fades early.
+    [0.22, (100.0 - racer.endurance.to_f) / 100.0].max
+  end
+
+  def health_pace_for(racer)
+    # Depleted horses are slower from the gun, not only once empty.
+    frac = (racer.health.to_f / 100.0).clamp(0.0, 1.0)
+    (frac - 1.0) * HEALTH_PACE_SCALE
+  end
+
+  def acceleration_boost_for(racer, race_progress)
+    return 0 if race_progress >= ACCEL_WINDOW
+
+    accel_factor = (racer.acceleration.to_f / 100.0).clamp(0.0, 1.5)
+    fade = (1.0 - race_progress / ACCEL_WINDOW).clamp(0.0, 1.0)
+    ACCEL_BOOST_SCALE * accel_factor * fade
+  end
+
+  def endurance_hold_for(racer, race_progress)
+    return 0 if race_progress < ENDURANCE_HOLD_START
+
+    t = ((race_progress - ENDURANCE_HOLD_START) / (1.0 - ENDURANCE_HOLD_START)).clamp(0.0, 1.0)
+    ((racer.endurance.to_f / 100.0) - 0.5) * ENDURANCE_HOLD_SCALE * t
   end
 
   def check_injury(racer)

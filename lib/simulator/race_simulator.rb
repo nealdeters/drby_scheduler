@@ -4,6 +4,16 @@ class RaceSimulator
   UPDATE_INTERVAL_MS = 10
   MAX_DURATION_MS = 300_000
 
+  # Horses have a finite footprint on the racing line. A trailing horse may
+  # only enter a lane when there is room ahead and behind; otherwise its
+  # forward movement is capped behind the horse in front.
+  HORSE_LENGTH_M = 12.0
+  LANE_CLEARANCE_M = 18.0
+  MAX_LANES = 8
+  LANE_PATH_OFFSET_M = 3.5
+  PASS_LOOKAHEAD_M = 28.0
+  MIN_PASS_SPEED_EDGE = 0.01
+
   # Per-tick health drain (10ms ticks). Tuned so mid/long races leave
   # finishers meaningfully below 100 and strategies stay distinct.
   STRATEGY_DECAY = {
@@ -181,7 +191,8 @@ class RaceSimulator
   def tick(elapsed)
     any_active_unfinished = false
 
-    update_positions if @tick_count % 250 == 0
+    update_positions
+    choose_lanes
 
     @racers.each do |racer|
       next unless racer.active?
@@ -253,8 +264,16 @@ class RaceSimulator
     final_speed = [final_speed, base_speed * SPEED_FLOOR_RATIO].max
     racer.current_speed = final_speed
 
+    # A horse can only pass after moving to a lane that is clear. If it has
+    # no room to go around, keep it behind the horse ahead rather than letting
+    # its scalar progress run through that horse.
+    path_ratio = lane_path_ratio(racer.lane)
+    # Speed is physical speed. An outer lane therefore converts less of that
+    # speed into progress toward the finish because its turns are longer.
+    course_step = capped_course_step(racer, final_speed / path_ratio)
     previous_laps = racer.laps
-    racer.total_distance += final_speed
+    racer.total_distance += course_step
+    racer.travel_distance += course_step * path_ratio
     current_lap_distance = racer.total_distance % @track.length
     racer.laps = (racer.total_distance / @track.length).to_i
 
@@ -416,6 +435,143 @@ class RaceSimulator
     span = full - start
     t = ((behind_laps - start) / span).clamp(0.0, 1.0)
     max_boost * t
+  end
+
+  # Select the shortest available line first. Lane 1 is the inside line;
+  # a blocked horse only moves outward when it has enough push to attempt a
+  # pass, and only into a lane with a full horse-length of clearance.
+  def choose_lanes
+    reservations = {}
+    @racers.select(&:active?).sort_by { |r| -r.total_distance }.each do |racer|
+      current_lane = racer.lane.to_i.clamp(1, MAX_LANES)
+      passing_target = passing_target_for(racer)
+
+      # Once a horse commits to going around an obstruction, keep it in the
+      # passing lane until its nose is a horse-length ahead. Without this
+      # commitment a clear inside gap can make it cut back too early and
+      # oscillate beside the same horse.
+      if current_lane > 1 && passing_target && racer.total_distance < passing_target.total_distance + HORSE_LENGTH_M
+        reservations[current_lane] ||= []
+        reservations[current_lane] << racer
+        next
+      end
+      racer.passing_target_id = nil
+
+      blocker = blocking_racer_for(racer, current_lane)
+      candidates = if blocker
+                     if has_passing_push?(racer, blocker)
+                       # A lane with its own nearby front-runner is not a
+                       # viable pass lane, even if the horse-length gap is
+                       # technically open.
+                       pass_lane_candidates(current_lane).reject do |lane|
+                         blocking_racer_for(racer, lane)
+                       end
+                     else
+                       []
+                     end
+                   else
+                     # Stay outside until the inside line is actually clear
+                     # ahead. Otherwise a horse can oscillate out-and-in
+                     # beside the same obstruction without ever completing
+                     # the pass.
+                     inward_lane_candidates(current_lane).reject do |lane|
+                       blocking_racer_for(racer, lane)
+                     end
+                   end
+
+      chosen = candidates.find do |lane|
+        lane_clear_for?(racer, lane, reservations)
+      end
+      chosen ||= current_lane
+      if blocker && chosen != current_lane
+        racer.passing_target_id = blocker.id
+      end
+      reservations[chosen] ||= []
+      reservations[chosen] << racer
+      racer.lane = chosen
+    end
+  end
+
+  def passing_target_for(racer)
+    target_id = racer.passing_target_id
+    return nil unless target_id
+
+    target = @racers.find { |other| other.id == target_id }
+    return nil unless target&.active?
+
+    target
+  end
+
+  def pass_lane_candidates(current_lane)
+    # Inside is the shortest route and therefore always gets first refusal.
+    # If the inside is occupied, step out one lane at a time.
+    ([current_lane - 1, current_lane + 1].select { |lane| lane.between?(1, MAX_LANES) })
+  end
+
+  def inward_lane_candidates(current_lane)
+    return [] if current_lane <= 1
+
+    [current_lane - 1]
+  end
+
+  def blocking_racer_for(racer, lane)
+    front = @racers.select do |other|
+      other != racer && other.active? && other.lane.to_i == lane && other.total_distance > racer.total_distance
+    end.min_by(&:total_distance)
+    return nil unless front
+    return nil if front.total_distance - racer.total_distance > PASS_LOOKAHEAD_M
+
+    front
+  end
+
+  def has_passing_push?(racer, blocker)
+    return false if racer.health.to_f <= 15
+
+    # A pass needs a real speed edge. Acceleration supplies the push; health
+    # and an aggressive strategy make a marginal move more likely, while a
+    # tired horse remains tucked in behind the obstruction.
+    acceleration = racer.acceleration.to_f.clamp(0.0, 100.0) / 100.0
+    health = racer.health.to_f.clamp(0.0, 100.0) / 100.0
+    strategy_push = racer.strategy == 'aggressive' ? 0.035 : 0.0
+    projected = racer.base_speed.to_f * (1.0 + acceleration * 0.12 + health * 0.04 + strategy_push)
+    blocker_speed = [blocker.current_speed.to_f / (UPDATE_INTERVAL_MS / 1000.0), blocker.base_speed.to_f].max
+    projected > blocker_speed + MIN_PASS_SPEED_EDGE
+  end
+
+  def lane_clear_for?(racer, lane, reservations)
+    return false unless lane.between?(1, MAX_LANES)
+
+    nearby = @racers.any? do |other|
+      next false if other == racer || !other.active? || other.lane.to_i != lane
+      (other.total_distance - racer.total_distance).abs < LANE_CLEARANCE_M
+    end
+    return false if nearby
+
+    # Prevent two horses from selecting the same piece of track in one tick.
+    (reservations[lane] || []).none? do |other|
+      (other.total_distance - racer.total_distance).abs < LANE_CLEARANCE_M
+    end
+  end
+
+  def capped_course_step(racer, proposed_step)
+    front = @racers.select do |other|
+      other != racer && other.active? && other.lane.to_i == racer.lane.to_i && other.total_distance > racer.total_distance
+    end.min_by(&:total_distance)
+    return proposed_step unless front
+
+    gap = front.total_distance - racer.total_distance
+    return proposed_step if gap > PASS_LOOKAHEAD_M
+
+    # Leave a fixed footprint behind the horse ahead. Finished horses are
+    # already through the line and do not block the next finisher.
+    [proposed_step, [gap - HORSE_LENGTH_M, 0.0].max].min
+  end
+
+  def lane_path_ratio(lane)
+    # On an oval, each lane farther from the rail has a longer turn radius.
+    # The ratio is applied to physical travel only; course progress still
+    # advances by the distance actually covered along the chosen line.
+    1.0 + (lane.to_i.clamp(1, MAX_LANES) - 1) * (2.0 * Math::PI * LANE_PATH_OFFSET_M / @track.length.to_f)
   end
 
   def calculate_track_penalty(racer)

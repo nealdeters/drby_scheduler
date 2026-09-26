@@ -3,7 +3,8 @@ class Racer
               :endurance, :consistency, :stamina_recovery
 
   attr_accessor :health, :strategy, :lane, :progress, :laps, :total_distance,
-                :status, :current_speed, :finish_time, :position, :tick_count
+                :status, :current_speed, :finish_time, :position, :tick_count,
+                :travel_distance, :passing_target_id
 
   STRATEGIES = %w[aggressive conservative balanced].freeze
   SURFACES = %w[asphalt dirt grass].freeze
@@ -28,6 +29,9 @@ class Racer
     @progress = 0
     @laps = 0
     @total_distance = 0
+    # Physical distance includes the extra path taken in an outer lane.
+    @travel_distance = 0
+    @passing_target_id = nil
     @status = 'waiting'
     @current_speed = 0
     @finish_time = nil
@@ -68,6 +72,7 @@ class Racer
       'progress' => progress,
       'laps' => laps,
       'totalDistance' => total_distance,
+      'travelDistance' => travel_distance,
       'status' => status,
       'currentSpeed' => current_speed,
       'finishTime' => finish_time,

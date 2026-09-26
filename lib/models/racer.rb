@@ -1,10 +1,11 @@
 class Racer
   attr_reader :id, :name, :color, :base_speed, :track_preference, :acceleration,
-              :endurance, :consistency, :stamina_recovery
+              :endurance, :consistency, :stamina_recovery, :lane
 
-  attr_accessor :health, :strategy, :lane, :progress, :laps, :total_distance,
+  attr_accessor :health, :strategy, :progress, :laps, :total_distance,
                 :status, :current_speed, :finish_time, :position, :tick_count,
-                :travel_distance, :passing_target_id
+                :travel_distance, :passing_target_id, :lane_target, :lane_position,
+                :lane_change, :lane_decision
 
   STRATEGIES = %w[aggressive conservative balanced].freeze
   SURFACES = %w[asphalt dirt grass].freeze
@@ -32,6 +33,12 @@ class Racer
     # Physical distance includes the extra path taken in an outer lane.
     @travel_distance = 0
     @passing_target_id = nil
+    # lane is the committed target; lane_position is the physical lateral
+    # position rendered by clients while a move is in progress.
+    @lane_target = 0
+    @lane_position = 0.0
+    @lane_change = nil
+    @lane_decision = nil
     @status = 'waiting'
     @current_speed = 0
     @finish_time = nil
@@ -69,6 +76,11 @@ class Racer
       'consistency' => consistency,
       'staminaRecovery' => stamina_recovery,
       'lane' => lane,
+      'laneTarget' => lane_target || lane,
+      'lanePosition' => lane_position || lane.to_f,
+      'laneChange' => lane_change,
+      'laneDecision' => lane_decision,
+      'passingTargetId' => passing_target_id,
       'progress' => progress,
       'laps' => laps,
       'totalDistance' => total_distance,
@@ -79,6 +91,19 @@ class Racer
       'position' => position,
       'tickCount' => tick_count
     }
+  end
+
+  # Test fixtures and legacy callers set lane directly. Keep the physical
+  # position aligned for a direct assignment, but never override an active
+  # server-owned transition.
+  def lane=(value)
+    @lane = value
+    if !@lane_change && @lane_position.to_f.zero?
+      @lane_position = value.to_f
+    elsif !@lane_change && defined?(@previous_lane_for_assignment) && @previous_lane_for_assignment != value
+      @lane_position = value.to_f
+    end
+    @previous_lane_for_assignment = value
   end
 
   def active?

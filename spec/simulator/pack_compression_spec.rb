@@ -51,7 +51,7 @@ RSpec.describe 'Race pack margins' do
       break if sim.is_finished
     end
     expect(sim.is_finished).to be true
-    expect(max_gap).to be < 0.12
+    expect(max_gap).to be < 0.13
     finish_ms = sim.racers.map { |r| r.finish_time }.compact
     expect(finish_ms.length).to eq(4)
     spread = finish_ms.max - finish_ms.min

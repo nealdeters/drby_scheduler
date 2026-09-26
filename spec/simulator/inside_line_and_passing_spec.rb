@@ -76,6 +76,7 @@ RSpec.describe 'inside-line traffic and passing' do
     expect(passer.lane).to eq(2)
 
     passer.total_distance = 119
+    sim.instance_variable_set(:@tick_count, 40)
     sim.send(:choose_lanes)
     expect(passer.lane).to eq(1)
     expect(passer.passing_target_id).to be_nil
@@ -93,11 +94,13 @@ RSpec.describe 'inside-line traffic and passing' do
     passer.total_distance = 90
 
     sim.send(:choose_lanes)
-    expect(passer.lane).to eq(2)
+    expect(passer.lane).to eq(3)
+    expect(passer.lane_decision['reason']).to eq('pass outside slower horse')
 
     passer.total_distance = 130
+    sim.instance_variable_set(:@tick_count, 40)
     sim.send(:choose_lanes)
-    expect(passer.lane).to eq(1)
+    expect(passer.lane).to eq(2)
   end
 
   it 'holds a horse behind the obstruction when it lacks passing push' do
@@ -135,6 +138,28 @@ RSpec.describe 'inside-line traffic and passing' do
         end
       end
     end
+  end
+
+
+  it 'emits explicit lane decisions and a continuous lateral transition in an eight-horse race' do
+    racers = 8.times.map do |i|
+      racer_hash(id: "h#{i}", base: i.even? ? 90 - i : 72 + i, acceleration: i.even? ? 90 : 40)
+    end
+    sim = simulator(racers)
+    transitions = []
+    1_200.times do |tick|
+      sim.instance_variable_set(:@tick_count, tick)
+      sim.send(:tick, tick * RaceSimulator::UPDATE_INTERVAL_MS)
+      sim.racers.each do |racer|
+        transitions << racer if racer.lane_change && racer.lane_position != racer.lane_change['from'].to_f
+      end
+      break if sim.is_finished
+    end
+
+    expect(sim.racers.map(&:lane_decision).compact).not_to be_empty
+    expect(sim.racers.map(&:lane_decision).compact.any? { |d| d['insideLineAdvantage'].to_f > 0 }).to be true
+    expect(transitions).not_to be_empty
+    expect(sim.racers.map { |r| r.lane_decision && r.lane_decision['reason'] }.compact).to include('target lane occupied; hold position').or include('blocked, no passing lane available')
   end
 
   it 'records the longer physical path while using an outer lane' do

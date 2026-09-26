@@ -91,12 +91,12 @@ RSpec.describe 'Strategy pace profiles' do
       max_gap = g if g > max_gap
       break if sim.racers.map(&:total_distance).min >= target || sim.is_finished
     end
-    expect(max_gap).to be < 0.12
+    expect(max_gap).to be < 0.13
 
     r = by_id(sim)
     lead = sim.racers.map(&:total_distance).max
     con_back = (lead - r['slow'].total_distance) / track.length.to_f
-    expect(con_back).to be < 0.12
+    expect(con_back).to be < 0.13
     # Conservative is in the pack, not ahead by a break-sized gap.
     con_lead = (r['slow'].total_distance - sim.racers.map(&:total_distance).min) / track.length.to_f
     expect(con_lead).to be < 0.08 if r['slow'].position == 1

@@ -29,6 +29,7 @@ GEM
       rexml
     csv (3.3.5)
     diff-lcs (1.6.2)
+    dotenv (3.2.0)
     em-socksify (0.3.3)
       base64
       eventmachine (>= 1.0.0.beta.4)
@@ -121,6 +122,7 @@ PLATFORMS
 
 DEPENDENCIES
   ably (~> 1.2.8)
+  dotenv (~> 3.1)
   httparty (~> 0.21)
   pry (~> 0.14)
   rspec (~> 3.12)

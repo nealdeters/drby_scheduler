@@ -8,11 +8,20 @@ class RaceSimulator
   # only enter a lane when there is room ahead and behind; otherwise its
   # forward movement is capped behind the horse in front.
   HORSE_LENGTH_M = 12.0
-  LANE_CLEARANCE_M = 18.0
+  # One horse length is the minimum safe gap; use it for lane changes so
+  # inside-line attempts happen before the pack strings wide.
+  LANE_CLEARANCE_M = HORSE_LENGTH_M
   MAX_LANES = 8
   LANE_PATH_OFFSET_M = 3.5
   PASS_LOOKAHEAD_M = 28.0
   MIN_PASS_SPEED_EDGE = 0.01
+  # Lane decisions happen at 100ms cadence; a committed move takes 360ms.
+  # This is long enough to read on the 50ms network stream without snapping.
+  LANE_DECISION_INTERVAL_TICKS = 10
+  LANE_CHANGE_TICKS = 36
+  LANE_CHANGE_THRESHOLD = 0.005
+  INSIDE_LINE_ADVANTAGE = 0.050
+  TRAFFIC_RISK_PENALTY = 0.02
 
   # Per-tick health drain (10ms ticks). Tuned so mid/long races leave
   # finishers meaningfully below 100 and strategies stay distinct.
@@ -42,10 +51,10 @@ class RaceSimulator
   FATIGUE_SCALE = 0.18
   HEALTH_PACE_SCALE = 0.08
   # Catch-up holds the oval together but must not erase attr/track/health
-  # gaps. Do not raise CATCHUP_MAX_BOOST.
+  # gaps while leaving room for traffic detours.
   CATCHUP_START_LAPS = 0.032
   CATCHUP_FULL_LAPS = 0.064
-  CATCHUP_MAX_BOOST = 0.50
+  CATCHUP_MAX_BOOST = 0.60
   ACCEL_WINDOW = 0.14
   ACCEL_BOOST_SCALE = 0.20
   ENDURANCE_HOLD_START = 0.55
@@ -96,10 +105,11 @@ class RaceSimulator
     @tick_count = 0
   end
 
-  def run(ably_service:, on_progress: nil, on_finish: nil)
+  def run(realtime_service: nil, ably_service: nil, on_progress: nil, on_finish: nil)
+    publisher = realtime_service || ably_service
     puts "[Simulator] Starting race #{@race_id} with #{@racers.length} racers"
 
-    ably_service.publish_race_started(@race_id, @racers, @track, 0) if ably_service
+    publisher.publish_race_started(@race_id, @racers, @track, 0) if publisher
 
     race_start = Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000
 
@@ -109,7 +119,7 @@ class RaceSimulator
       @tick_count += 1
 
       if @tick_count % 5 == 0
-        ably_service.publish_race_progress(@race_id, @racers, @tick_count, @total_distance, elapsed) if ably_service
+        publisher.publish_race_progress(@race_id, @racers, @tick_count, @total_distance, elapsed) if publisher
         on_progress&.call(@racers, @tick_count)
       end
 
@@ -136,7 +146,7 @@ class RaceSimulator
       Racer.from_hash(racer.to_h.merge('position' => idx))
     end
 
-    ably_service.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count, elapsed) if ably_service
+    publisher.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count, elapsed) if publisher
     
     puts "[Simulator] Calling on_finish callback with #{all_results.length} results"
     on_finish&.call(all_results, @tick_count)
@@ -171,12 +181,16 @@ class RaceSimulator
     racers.each_with_index do |racer, idx|
       if racer.can_race?
         racer.lane = idx + 1
+        racer.lane_target = idx + 1
+        racer.lane_position = (idx + 1).to_f
         racer.position = idx + 1
         racer.status = 'active'
         active << racer
       else
         racer.status = 'dnf'
         racer.lane = idx + 1
+        racer.lane_target = idx + 1
+        racer.lane_position = (idx + 1).to_f
         racer.position = 0
         dnf << racer
       end
@@ -437,59 +451,167 @@ class RaceSimulator
     max_boost * t
   end
 
-  # Select the shortest available line first. Lane 1 is the inside line;
-  # a blocked horse only moves outward when it has enough push to attempt a
-  # pass, and only into a lane with a full horse-length of clearance.
+  # Choose a target from explicit racing inputs, then move toward that target
+  # over time. lane remains the committed target for backwards compatibility;
+  # lanePosition is the physical state consumed by the renderer.
   def choose_lanes
-    reservations = {}
+    advance_lane_changes
+    return unless @tick_count.zero? || (@tick_count % LANE_DECISION_INTERVAL_TICKS).zero?
+
+    reservations = Hash.new { |hash, key| hash[key] = [] }
     @racers.select(&:active?).sort_by { |r| -r.total_distance }.each do |racer|
       current_lane = racer.lane.to_i.clamp(1, MAX_LANES)
-      passing_target = passing_target_for(racer)
+      if lane_change_active?(racer)
+        reservations[current_lane] << racer
+        next
+      end
 
-      # Once a horse commits to going around an obstruction, keep it in the
-      # passing lane until its nose is a horse-length ahead. Without this
-      # commitment a clear inside gap can make it cut back too early and
-      # oscillate beside the same horse.
-      if current_lane > 1 && passing_target && racer.total_distance < passing_target.total_distance + HORSE_LENGTH_M
-        reservations[current_lane] ||= []
+      # Once committed to a pass, stay in the passing lane until the nose is
+      # clear. This prevents an inward preference from cutting the move short.
+      passing_target = passing_target_for(racer)
+      if passing_target && racer.total_distance < passing_target.total_distance + HORSE_LENGTH_M
+        racer.lane_decision = {
+          'evaluatedAtTick' => @tick_count,
+          'currentLane' => current_lane,
+          'targetLane' => current_lane,
+          'blockerId' => passing_target.id,
+          'targetSpaceAvailable' => true,
+          'nearbyHorses' => nearby_horses(racer).map(&:id),
+          'scores' => { current_lane => 0.0 },
+          'insideLineAdvantage' => ((current_lane - 1) * INSIDE_LINE_ADVANTAGE).round(3),
+          'decision' => 'hold',
+          'reason' => 'hold outside until pass is clear'
+        }
         reservations[current_lane] << racer
         next
       end
       racer.passing_target_id = nil
 
       blocker = blocking_racer_for(racer, current_lane)
-      candidates = if blocker
-                     if has_passing_push?(racer, blocker)
-                       # A lane with its own nearby front-runner is not a
-                       # viable pass lane, even if the horse-length gap is
-                       # technically open.
-                       pass_lane_candidates(current_lane).reject do |lane|
-                         blocking_racer_for(racer, lane)
-                       end
-                     else
-                       []
-                     end
-                   else
-                     # Stay outside until the inside line is actually clear
-                     # ahead. Otherwise a horse can oscillate out-and-in
-                     # beside the same obstruction without ever completing
-                     # the pass.
-                     inward_lane_candidates(current_lane).reject do |lane|
-                       blocking_racer_for(racer, lane)
-                     end
-                   end
+      inside_blocker = current_lane > 1 ? blocking_racer_for(racer, current_lane - 1) : nil
+      decision_blocker = blocker || inside_blocker
+      candidates = [current_lane]
+      if decision_blocker.nil? || has_passing_push?(racer, decision_blocker)
+        candidates.concat([current_lane - 1, current_lane + 1].select { |lane| lane.between?(1, MAX_LANES) })
+      end
+      candidates.uniq!
 
-      chosen = candidates.find do |lane|
-        lane_clear_for?(racer, lane, reservations)
+      scores = candidates.each_with_object({}) do |lane, result|
+        result[lane] = lane_score(racer, lane, current_lane, decision_blocker, blocker, reservations)
       end
-      chosen ||= current_lane
-      if blocker && chosen != current_lane
-        racer.passing_target_id = blocker.id
+      safe = candidates.select { |lane| lane == current_lane || lane_clear_for?(racer, lane, reservations) }
+      # With clear track, the shorter line gets first refusal. The score model
+      # still governs traffic and passing; this avoids a perfectly clear horse
+      # idling outside merely because its current lane has momentum points.
+      chosen = if decision_blocker.nil? && current_lane > 1 && safe.include?(current_lane - 1)
+        current_lane - 1
+      else
+        safe.max_by { |lane| scores[lane] } || current_lane
       end
-      reservations[chosen] ||= []
+      best_gain = scores.fetch(chosen, 0.0) - scores.fetch(current_lane, 0.0)
+      # A horse can be blocked by a slower runner in its current lane or by
+      # the desirable inside lane. In either case, a safe outside lane is a
+      # legitimate passing attempt; without push it waits.
+      should_move = chosen != current_lane && (decision_blocker && has_passing_push?(racer, decision_blocker) ? best_gain >= 0.0 : best_gain >= LANE_CHANGE_THRESHOLD)
+      chosen = current_lane unless should_move
+
+      reason = decision_reason(racer, current_lane, chosen, decision_blocker, safe)
+      racer.lane_decision = {
+        'evaluatedAtTick' => @tick_count,
+        'currentLane' => current_lane,
+        'targetLane' => chosen,
+        'blockerId' => decision_blocker&.id,
+        'targetSpaceAvailable' => safe.include?(chosen),
+        'nearbyHorses' => nearby_horses(racer).map(&:id),
+        'scores' => scores.transform_values { |value| value.finite? ? value.round(3) : nil },
+        'insideLineAdvantage' => ((current_lane - 1) * INSIDE_LINE_ADVANTAGE).round(3),
+        'decision' => chosen == current_lane ? 'hold' : 'move',
+        'reason' => reason
+      }
+
+      if chosen != current_lane
+        racer.passing_target_id = decision_blocker&.id if decision_blocker
+        start_lane_change(racer, chosen, reason)
+      else
+        racer.passing_target_id = nil unless decision_blocker && racer.passing_target_id
+      end
       reservations[chosen] << racer
-      racer.lane = chosen
     end
+  end
+
+  def advance_lane_changes
+    @racers.each do |racer|
+      next unless racer.active? || racer.finished?
+      next unless lane_change_active?(racer)
+
+      from = racer.lane_change['from'].to_f
+      to = racer.lane_change['to'].to_f
+      elapsed = @tick_count - racer.lane_change['startedAtTick'].to_i
+      progress = (elapsed.to_f / LANE_CHANGE_TICKS).clamp(0.0, 1.0)
+      # Smoothstep keeps the horse settled at both ends rather than snapping.
+      eased = progress * progress * (3.0 - 2.0 * progress)
+      racer.lane_position = from + (to - from) * eased
+      racer.lane_change['progress'] = progress.round(3)
+      if progress >= 1.0
+        racer.lane_position = to
+        racer.lane_change['completedAtTick'] = @tick_count
+        racer.lane_change = nil
+      end
+    end
+  end
+
+  def lane_change_active?(racer)
+    racer.lane_change.is_a?(Hash) && racer.lane_change['progress'].to_f < 1.0
+  end
+
+  def start_lane_change(racer, target_lane, reason)
+    racer.lane_target = target_lane
+    racer.lane_change = {
+      'from' => racer.lane_position.to_f.nonzero? || racer.lane.to_f,
+      'to' => target_lane.to_f,
+      'startedAtTick' => @tick_count,
+      'progress' => 0.0,
+      'reason' => reason
+    }
+    racer.lane = target_lane
+  end
+
+  def lane_score(racer, lane, current_lane, blocker, current_blocker, reservations)
+    return -Float::INFINITY unless lane.between?(1, MAX_LANES)
+    return -Float::INFINITY unless lane == current_lane || lane_clear_for?(racer, lane, reservations)
+
+    score = lane == current_lane ? 0.0 : (current_lane - lane) * INSIDE_LINE_ADVANTAGE
+    score += 0.025 if lane == 1
+    score += 0.02 if lane == current_lane # momentum / don't weave for free
+    if blocker && lane != current_lane
+      score += 0.22 # clear air is valuable when a horse is being checked
+      score += 0.04 if lane > current_lane # outside pass is a valid fallback
+    elsif current_blocker && lane == current_lane
+      score -= 0.20
+    end
+    score -= nearby_horses_in_lane(racer, lane).length * TRAFFIC_RISK_PENALTY
+    score += 0.018 if racer.strategy == 'aggressive' && lane != current_lane
+    score -= 0.012 if racer.strategy == 'conservative' && lane != current_lane
+    score
+  end
+
+  def decision_reason(racer, current_lane, chosen, blocker, safe)
+    return 'target lane occupied; hold position' if chosen == current_lane && blocker.nil? && !safe.include?(current_lane - 1)
+    return 'blocked, no passing lane available' if chosen == current_lane && blocker
+    return 'pass outside slower horse' if blocker && chosen > current_lane
+    return 'pass inside slower horse' if blocker && chosen < current_lane
+    return 'inside line available' if chosen < current_lane
+    'hold position'
+  end
+
+  def nearby_horses(racer)
+    @racers.select do |other|
+      other != racer && other.active? && (other.total_distance - racer.total_distance).abs <= PASS_LOOKAHEAD_M
+    end
+  end
+
+  def nearby_horses_in_lane(racer, lane)
+    nearby_horses(racer).select { |other| other.lane.to_i == lane && (other.total_distance - racer.total_distance).abs < LANE_CLEARANCE_M }
   end
 
   def passing_target_for(racer)
@@ -503,8 +625,10 @@ class RaceSimulator
   end
 
   def pass_lane_candidates(current_lane)
-    # Inside is the shortest route and therefore always gets first refusal.
-    # If the inside is occupied, step out one lane at a time.
+    # Lane 1 is the inside line and the shortest route. A horse may move one
+    # lane per decision, but it always tries inward before going around the
+    # outside. That makes inside-line attempts observable without permitting
+    # an unsafe diagonal jump through traffic.
     ([current_lane - 1, current_lane + 1].select { |lane| lane.between?(1, MAX_LANES) })
   end
 

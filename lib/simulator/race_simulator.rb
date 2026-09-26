@@ -8,7 +8,9 @@ class RaceSimulator
   # only enter a lane when there is room ahead and behind; otherwise its
   # forward movement is capped behind the horse in front.
   HORSE_LENGTH_M = 12.0
-  LANE_CLEARANCE_M = 18.0
+  # One horse length is the minimum safe gap; use it for lane changes so
+  # inside-line attempts happen before the pack strings wide.
+  LANE_CLEARANCE_M = HORSE_LENGTH_M
   MAX_LANES = 8
   LANE_PATH_OFFSET_M = 3.5
   PASS_LOOKAHEAD_M = 28.0

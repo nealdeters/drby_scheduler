@@ -6,7 +6,7 @@ require_relative '../simulator/race_simulator'
 class RaceOrchestrator
   CHECK_INTERVAL_SECONDS = 10
 
-  def initialize(ably_api_key:, netlify_site_id:, netlify_auth_token:)
+  def initialize(ably_api_key: nil, house_bus_url: nil, house_bus_api_key: nil, realtime_transport: ENV.fetch('DRBY_REALTIME_TRANSPORT', 'house_bus'), netlify_site_id:, netlify_auth_token:)
     @racers_storage = Services::NetlifyBlobsService.new(
       site_id: netlify_site_id,
       auth_token: netlify_auth_token,
@@ -22,7 +22,12 @@ class RaceOrchestrator
       auth_token: netlify_auth_token,
       store_name: 'site:races'
     )
-    @ably = Services::AblyService.new(ably_api_key)
+    @realtime = Services::RealtimeService.new(
+      transport: realtime_transport,
+      house_bus_url: house_bus_url,
+      house_bus_api_key: house_bus_api_key,
+      ably_api_key: ably_api_key
+    )
     @scheduler = SeasonScheduler.new(
       storage_service: @races_storage,
       racers_storage: @racers_storage,
@@ -158,7 +163,7 @@ class RaceOrchestrator
     Thread.new do
       begin
         finished = simulator.run(
-          ably_service: @ably,
+          realtime_service: @realtime,
           on_finish: ->(results, tick_count = nil) { handle_race_finished(race_id, results, tick_count) }
         )
 

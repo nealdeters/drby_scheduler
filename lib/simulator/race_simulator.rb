@@ -96,10 +96,11 @@ class RaceSimulator
     @tick_count = 0
   end
 
-  def run(ably_service:, on_progress: nil, on_finish: nil)
+  def run(realtime_service: nil, ably_service: nil, on_progress: nil, on_finish: nil)
+    publisher = realtime_service || ably_service
     puts "[Simulator] Starting race #{@race_id} with #{@racers.length} racers"
 
-    ably_service.publish_race_started(@race_id, @racers, @track, 0) if ably_service
+    publisher.publish_race_started(@race_id, @racers, @track, 0) if publisher
 
     race_start = Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000
 
@@ -109,7 +110,7 @@ class RaceSimulator
       @tick_count += 1
 
       if @tick_count % 5 == 0
-        ably_service.publish_race_progress(@race_id, @racers, @tick_count, @total_distance, elapsed) if ably_service
+        publisher.publish_race_progress(@race_id, @racers, @tick_count, @total_distance, elapsed) if publisher
         on_progress&.call(@racers, @tick_count)
       end
 
@@ -136,7 +137,7 @@ class RaceSimulator
       Racer.from_hash(racer.to_h.merge('position' => idx))
     end
 
-    ably_service.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count, elapsed) if ably_service
+    publisher.publish_race_finished(@race_id, results, dnf_with_positions, @tick_count, elapsed) if publisher
     
     puts "[Simulator] Calling on_finish callback with #{all_results.length} results"
     on_finish&.call(all_results, @tick_count)
@@ -503,8 +504,10 @@ class RaceSimulator
   end
 
   def pass_lane_candidates(current_lane)
-    # Inside is the shortest route and therefore always gets first refusal.
-    # If the inside is occupied, step out one lane at a time.
+    # Lane 1 is the inside line and the shortest route. A horse may move one
+    # lane per decision, but it always tries inward before going around the
+    # outside. That makes inside-line attempts observable without permitting
+    # an unsafe diagonal jump through traffic.
     ([current_lane - 1, current_lane + 1].select { |lane| lane.between?(1, MAX_LANES) })
   end
 

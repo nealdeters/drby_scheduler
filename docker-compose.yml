@@ -5,9 +5,14 @@ services:
       dockerfile: Dockerfile
     restart: always
     environment:
+      - DRBY_REALTIME_TRANSPORT=${DRBY_REALTIME_TRANSPORT:-house_bus}
       - ABLY_API_KEY=${ABLY_API_KEY}
+      - CENTRIFUGO_API_URL=${CENTRIFUGO_API_URL:-http://host.docker.internal:8002}
+      - CENTRIFUGO_HTTP_API_KEY=${CENTRIFUGO_HTTP_API_KEY}
       - NETLIFY_SITE_ID=${NETLIFY_SITE_ID}
       - NETLIFY_AUTH_TOKEN=${NETLIFY_AUTH_TOKEN}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./scripts:/app/scripts
       - /mnt/neal_hd/drby_logs:/app/logs
